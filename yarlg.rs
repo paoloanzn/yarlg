@@ -19,7 +19,7 @@ pub struct AsciiCharacterRange {
 //      .build()`
 //
 // `start` can never be greater than `end` and neither
-// of them can be grater than `TRANSITIONS_PER_STATE`.
+// of them can be ge than `TRANSITIONS_PER_STATE`.
 impl AsciiCharacterRange {
     pub fn new() -> Self {
         return Self {
@@ -40,13 +40,13 @@ impl AsciiCharacterRange {
     pub fn build(self) -> Result<Self, String> {
         match (self.start, self.end) {
             (Some(start), Some(end)) => {
-                if end > TRANSITIONS_PER_STATE {
+                if end >= TRANSITIONS_PER_STATE {
                     return Err(format!(
                         "Error: `end`({}) is over the max allowed value({})",
                         end, TRANSITIONS_PER_STATE
                     ));
                 }
-                if start > TRANSITIONS_PER_STATE {
+                if start >= TRANSITIONS_PER_STATE {
                     return Err(format!(
                         "Error: `start`({}) is over the max allowed value({})",
                         start, TRANSITIONS_PER_STATE
@@ -61,7 +61,7 @@ impl AsciiCharacterRange {
                 return Ok(self);
             }
             (Some(start), None) => {
-                if start > TRANSITIONS_PER_STATE {
+                if start >= TRANSITIONS_PER_STATE {
                     return Err(format!(
                         "Error: `start`({}) is over the max allowed value({})",
                         start, TRANSITIONS_PER_STATE
@@ -70,7 +70,7 @@ impl AsciiCharacterRange {
                 return Ok(self);
             }
             (None, Some(end)) => {
-                if end > TRANSITIONS_PER_STATE {
+                if end >= TRANSITIONS_PER_STATE {
                     return Err(format!(
                         "Error: `end`({}) is over the max allowed value({})",
                         end, TRANSITIONS_PER_STATE
