@@ -1,0 +1,15 @@
+[package]
+name = "yarlg"
+description = "DFA lexer generator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[[bin]]
+name = "test"
+path = "test.rs"
+test = false
+
+[lib]
+path = "yarlg.rs"
