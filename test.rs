@@ -5,6 +5,8 @@ use std::{
     io::{self, Read},
 };
 
+use yarlg;
+
 fn read_file_as_bytes(file_path: &str, read_buf: &mut [u8]) -> usize {
     let mut fp = match File::open(file_path) {
         Ok(fp) => fp,
@@ -42,4 +44,16 @@ pub fn main() {
         }
     };
     println!("Bytes read: {} Bytes\nFile:\n{}", bytes_read, readable_buf);
+
+    let digit = match yarlg::AsciiCharacterRange::new()
+        .with_start('0' as u8).with_end('9' as u8)
+        .build()
+    {
+        Ok(range) => range,
+        Err(error) => {
+            eprint!("Error: Error creating AsciiCharacterRange: {}", error);
+            panic!("An unexpected error occurred.")
+        }
+    };
+    println!("DIGIT = {}", digit);
 }
