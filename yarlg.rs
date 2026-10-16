@@ -1,9 +1,7 @@
 // yarlg.rs: Yet another Rust lexer generator.
 
-use core::num;
 use std::{
-    fmt::{self, Debug, Error},
-    num::FpCategory::Nan,
+    fmt::{self, Debug},
 };
 
 // Ordinal continguos range of ASCII characters.
@@ -14,6 +12,14 @@ pub struct AsciiCharacterRange {
     end: Option<u8>,
 }
 
+// A range can contain 1, 2 or zero elements.
+// You can create a range like this:
+// `yarlg::AsciiCharacterRange::new()
+//      .with_start('0' as u8).with_end('9' as u8)
+//      .build()`
+//
+// `start` can never be greater than `end` and neither
+// of them can be grater than `TRANSITIONS_PER_STATE`.
 impl AsciiCharacterRange {
     pub fn new() -> Self {
         return Self {
@@ -81,13 +87,13 @@ impl fmt::Display for AsciiCharacterRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (self.start, self.end) {
             (Some(start), Some(end)) => {
-                write!(f, "{0}...{1}", start as char, end as char)
+                write!(f, "'{0}'...'{1}'", start as char, end as char)
             }
             (Some(start), None) => {
-                write!(f, "{0}", start as char)
+                write!(f, "'{0}'", start as char)
             }
             (None, Some(end)) => {
-                write!(f, "{0}", end as char)
+                write!(f, "'{0}'", end as char)
             }
             (None, None) => {
                 write!(f, "<empty_range>")
@@ -96,8 +102,7 @@ impl fmt::Display for AsciiCharacterRange {
     }
 }
 
-//
-enum CharacterGroupType {
+pub enum CharacterGroupType {
     ExactlyOne, // {}
     AtLeastOne, // {}+
     ZeroOrMore, // {}*
@@ -105,14 +110,66 @@ enum CharacterGroupType {
 
 // Set of ranges of ASCII characters.
 // {0..9, a...z, A...Z}+
-struct CharacterGroup<'a> {
-    elements: &'a [AsciiCharacterRange],
-    group_type: CharacterGroupType,
+pub struct CharacterGroup<'a> {
+    pub ranges: &'a [AsciiCharacterRange],
+    pub group_type: CharacterGroupType,
+}
+
+// Creates a new CharacterGroup by passing ranges and a CharacterGroupType.
+#[macro_export]
+macro_rules! group {
+    ($($arg:expr)+, $type:expr $(,)?) => {
+       $crate::CharacterGroup {
+            ranges: &[$($arg ,)+],
+            group_type: $type
+       };
+    };
+}
+
+impl<'a> CharacterGroup<'a> {
+    fn format_ranges(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::from("");
+        for (i, item) in self.ranges.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            match write!(&mut out, "{}", item) {
+                Ok(res) => res,
+                Err(error ) => {
+                    panic!("An unexpected error occured: {}", error);
+                }
+            }
+        }
+        return out;
+    }
+}
+
+// Pretty-print for CharacterGroup:
+// `{'a'...'Z', 'A'...'Z`}*`
+impl<'a> fmt::Display for CharacterGroup<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let group_type_symbol: char = match self.group_type {
+            CharacterGroupType::AtLeastOne => '+',
+            CharacterGroupType::ExactlyOne => '\0',
+            CharacterGroupType::ZeroOrMore => '*',
+        };
+        write!(f, "{{{}}}{}", self.format_ranges(), group_type_symbol)
+    }
 }
 
 struct Token<'a> {
     label: &'a str,
-    ranges: [CharacterGroup<'a>],
+    ranges: &'a [CharacterGroup<'a>],
+}
+
+impl<'a> Token<'a> {
+    pub fn new(label: &'a str, ranges: &'a [CharacterGroup]) -> Self {
+        return Self {
+            label: label,
+            ranges: ranges
+        }
+    }
 }
 
 type State = usize;

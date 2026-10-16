@@ -55,5 +55,6 @@ pub fn main() {
             panic!("An unexpected error occurred.")
         }
     };
-    println!("DIGIT = {}", digit);
+    let group = yarlg::group!(digit, yarlg::CharacterGroupType::AtLeastOne);
+    println!("NUMBER: {}", group);
 }
