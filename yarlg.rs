@@ -198,169 +198,224 @@ impl<'a> Token<'a> {
         }
         let mut num_transitions: usize = 0;
         let mut num_states: usize = 0;
-        for (i, group) in self.groups.iter().enumerate() {
-            let state: State = i;
-            num_states += 1;
+        for group in self.groups.iter() {
             for range in group.ranges.iter() {
                 match (range.start, range.end) {
-                    (Some(start), Some(end)) => {
-                        expand_range!(
-                            start as char,
-                            end as char,
-                            buf,
-                            num_transitions,
-                            state,
-                            state + 1
-                        );
-                        match group.group_type {
-                            CharacterGroupType::ExactlyOne => {}
-                            CharacterGroupType::AtLeastOne => {
-                                expand_range!(
-                                    start as char,
-                                    end as char,
-                                    buf,
-                                    num_transitions,
-                                    state + 1,
-                                    state + 1
-                                );
-                            }
-                            CharacterGroupType::ZeroOrMore => {
-                                // TODO.
-                            }
+                    (Some(start), Some(end)) => match group.group_type {
+                        CharacterGroupType::ExactlyOne => {
+                            expand_range!(
+                                start as char,
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states + 1
+                            );
                         }
-                    }
-                    (Some(start), None) => {
-                        expand_range!(
-                            start as char,
-                            buf,
-                            num_transitions,
-                            state,
-                            state + 1
-                        );
-                        match group.group_type {
-                            CharacterGroupType::ExactlyOne => {}
-                            CharacterGroupType::AtLeastOne => {
-                                expand_range!(
-                                    start as char,
-                                    buf,
-                                    num_transitions,
-                                    state + 1,
-                                    state + 1
-                                );
-                            }
-                            CharacterGroupType::ZeroOrMore => {
-                                // TODO.
-                            }
+                        CharacterGroupType::AtLeastOne => {
+                            expand_range!(
+                                start as char,
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states + 1
+                            );
+                            expand_range!(
+                                start as char,
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states + 1,
+                                num_states + 1
+                            );
                         }
-                    }
-                    (None, Some(end)) => {
-                        expand_range!(
-                            end as char,
-                            buf,
-                            num_transitions,
-                            state,
-                            state + 1
-                        );
-                        match group.group_type {
-                            CharacterGroupType::ExactlyOne => {}
-                            CharacterGroupType::AtLeastOne => {
-                                expand_range!(
-                                    end as char,
-                                    buf,
-                                    num_transitions,
-                                    state + 1,
-                                    state + 1
-                                );
-                            }
-                            CharacterGroupType::ZeroOrMore => {
-                                // TODO.
-                            }
+                        CharacterGroupType::ZeroOrMore => {
+                            expand_range!(
+                                start as char,
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states
+                            );
                         }
-                    }
-                    (None, None) => {
-                        num_states -= 1;
-                    }
+                    },
+                    (Some(start), None) => match group.group_type {
+                        CharacterGroupType::ExactlyOne => {
+                            expand_range!(
+                                start as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states + 1
+                            );
+                        }
+                        CharacterGroupType::AtLeastOne => {
+                            expand_range!(
+                                start as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states + 1
+                            );
+                            expand_range!(
+                                start as char,
+                                buf,
+                                num_transitions,
+                                num_states + 1,
+                                num_states + 1
+                            );
+                        }
+                        CharacterGroupType::ZeroOrMore => {
+                            expand_range!(
+                                start as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states
+                            );
+                        }
+                    },
+                    (None, Some(end)) => match group.group_type {
+                        CharacterGroupType::ExactlyOne => {
+                            expand_range!(
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states + 1
+                            );
+                        }
+                        CharacterGroupType::AtLeastOne => {
+                            expand_range!(
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states + 1
+                            );
+                            expand_range!(
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states + 1,
+                                num_states + 1
+                            );
+                        }
+                        CharacterGroupType::ZeroOrMore => {
+                            expand_range!(
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                num_states
+                            );
+                        }
+                    },
+                    (None, None) => {}
                 }
+            }
+            match group.group_type {
+                CharacterGroupType::AtLeastOne => num_states += 1,
+                CharacterGroupType::ExactlyOne => num_states += 1,
+                CharacterGroupType::ZeroOrMore => num_states += 0,
             }
         }
         let final_state: State = num_states + 1;
         for delimiter in self.delimiters.iter() {
-            for (j, range) in delimiter.ranges.iter().enumerate() {
+            if let CharacterGroupType::ZeroOrMore = delimiter.group_type {
+                panic!("Error: delimiter groups cannot be ZeroOrMore, a delimiter is always required.");
+            }
+            for range in delimiter.ranges.iter() {
                 match (range.start, range.end) {
-                    (Some(start), Some(end)) => {
-                        expand_range!(
-                            start as char,
-                            end as char,
-                            buf,
-                            num_transitions,
-                            num_states,
-                            final_state
-                        );
-                        match delimiter.group_type {
-                            CharacterGroupType::ExactlyOne => {}
-                            CharacterGroupType::AtLeastOne => {
-                                expand_range!(
-                                    start as char,
-                                    end as char,
-                                    buf,
-                                    num_transitions,
-                                    num_states,
-                                    final_state
-                                );
-                            }
-                            CharacterGroupType::ZeroOrMore => {
-                                // TODO.
-                            }
+                    (Some(start), Some(end)) => match delimiter.group_type {
+                        CharacterGroupType::ExactlyOne => {
+                            expand_range!(
+                                start as char,
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                final_state
+                            );
                         }
-                    }
-                    (Some(start), None) => {
-                        expand_range!(
-                            start as char,
-                            buf,
-                            num_transitions,
-                            num_states,
-                            final_state
-                        );
-                        match delimiter.group_type {
-                            CharacterGroupType::ExactlyOne => {}
-                            CharacterGroupType::AtLeastOne => {
-                                expand_range!(
-                                    start as char,
-                                    buf,
-                                    num_transitions,
-                                    final_state,
-                                    final_state
-                                );
-                            }
-                            CharacterGroupType::ZeroOrMore => {
-                                // TODO.
-                            }
+                        CharacterGroupType::AtLeastOne => {
+                            expand_range!(
+                                start as char,
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                final_state
+                            );
+                            expand_range!(
+                                start as char,
+                                end as char,
+                                buf,
+                                num_transitions,
+                                final_state,
+                                final_state
+                            );
                         }
-                    }
-                    (None, Some(end)) => {
-                        expand_range!(
-                            end as char,
-                            buf,
-                            num_transitions,
-                            num_states,
-                            final_state
-                        );
-                        match delimiter.group_type {
-                            CharacterGroupType::ExactlyOne => {}
-                            CharacterGroupType::AtLeastOne => {
-                                expand_range!(
-                                    end as char,
-                                    buf,
-                                    num_transitions,
-                                    final_state,
-                                    final_state
-                                );
-                            }
-                            CharacterGroupType::ZeroOrMore => {
-                                // TODO.
-                            }
+                        CharacterGroupType::ZeroOrMore => unreachable!(),
+                    },
+                    (Some(start), None) => match delimiter.group_type {
+                        CharacterGroupType::ExactlyOne => {
+                            expand_range!(
+                                start as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                final_state
+                            );
                         }
-                    }
+                        CharacterGroupType::AtLeastOne => {
+                            expand_range!(
+                                start as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                final_state
+                            );
+                            expand_range!(
+                                start as char,
+                                buf,
+                                num_transitions,
+                                final_state,
+                                final_state
+                            );
+                        }
+                        CharacterGroupType::ZeroOrMore => unreachable!(),
+                    },
+                    (None, Some(end)) => match delimiter.group_type {
+                        CharacterGroupType::ExactlyOne => {
+                            expand_range!(
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                final_state
+                            );
+                        }
+                        CharacterGroupType::AtLeastOne => {
+                            expand_range!(
+                                end as char,
+                                buf,
+                                num_transitions,
+                                num_states,
+                                final_state
+                            );
+                            expand_range!(
+                                end as char,
+                                buf,
+                                num_transitions,
+                                final_state,
+                                final_state
+                            );
+                        }
+                        CharacterGroupType::ZeroOrMore => unreachable!(),
+                    },
                     (None, None) => {}
                 }
             }
