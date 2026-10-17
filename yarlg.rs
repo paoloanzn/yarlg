@@ -2,7 +2,6 @@
 
 use std::{
     fmt::{self, Debug},
-    num,
 };
 
 // Ordinal continguos range of ASCII characters.
@@ -174,7 +173,7 @@ impl<'a> Token<'a> {
             }};
         }
         let mut num_transitions: usize = 0;
-        let mut num_states: State = 0;
+        let mut num_states: State = START_STATE;
         let mut group_index: usize = 0;
         while group_index < self.groups.len() {
             let group = &self.groups[group_index];
@@ -418,6 +417,7 @@ impl<'a> Token<'a> {
 
 pub type State = isize;
 const INVALID_STATE: isize = -1;
+const START_STATE: State = 0;
 const TRANSITIONS_PER_STATE: u8 = 128;
 
 // Used compute the index of a given (State, char) key pair in the transition table.
@@ -502,7 +502,7 @@ const fn groups_transitions(groups: &[CharacterGroup]) -> usize {
 }
 
 // Total number of states of the DFA.
-// The start state 0 is shared by every token.
+// The start state `START_STATE` is shared by every token.
 pub const fn count_states(tokens: &[Token]) -> usize {
     let mut total_states: usize = 0;
     let mut i: usize = 0;
@@ -556,38 +556,36 @@ pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
     tokens: &'a [Token<'a>],
 ) -> TransitionTable<'a, N, M> {
     macro_rules! set_transitions {
-        ($table:expr, $buf:expr, $num_states:expr, $token_states:expr, $num_transitions:expr) => {
-            {
-                // Number of global states used before this token.
-                // Only the start state 0 is shared since it's unique for the whole DFA.
-                let offset = ($num_states - $token_states) as isize;
-                let mut i: usize = 0;
-                while i < $num_transitions {
-                    let (mut state_start, c, mut state_end) = $buf[i];
-                    if state_start != 0 {
-                        state_start += offset;
-                    }
-                    // Terminal states are negative: shift their absolute value.
-                    if state_end < 0 {
-                        state_end -= offset;
-                    } else {
-                        state_end += offset;
-                    }
-                    let index = compute_index(state_start, c as u8);
-                    if $table[index] != INVALID_STATE {
-                        let src = compute_index($table[index].abs(), 0);
-                        let dest = compute_index(state_end.abs(), 0);
-                        let mut k: usize = 0;
-                        while k < TRANSITIONS_PER_STATE as usize {
-                            $table[dest + k] = $table[src + k];
-                            k += 1;
-                        }
-                    }
-                    $table[index] = state_end;
-                    i += 1;
+        ($table:expr, $buf:expr, $num_states:expr, $token_states:expr, $num_transitions:expr) => {{
+            // Number of global states used before this token.
+            // Only `START_STATE` is shared since it's unique for the whole DFA.
+            let offset = ($num_states - $token_states) as isize;
+            let mut i: usize = 0;
+            while i < $num_transitions {
+                let (mut state_start, c, mut state_end) = $buf[i];
+                if state_start != START_STATE {
+                    state_start += offset;
                 }
-           }
-        };
+                // Terminal states are negative: shift their absolute value.
+                if state_end < 0 {
+                    state_end -= offset;
+                } else {
+                    state_end += offset;
+                }
+                let index = compute_index(state_start, c as u8);
+                if $table[index] != INVALID_STATE {
+                    let src = compute_index($table[index].abs(), 0);
+                    let dest = compute_index(state_end.abs(), 0);
+                    let mut k: usize = 0;
+                    while k < TRANSITIONS_PER_STATE as usize {
+                        $table[dest + k] = $table[src + k];
+                        k += 1;
+                    }
+                }
+                $table[index] = state_end;
+                i += 1;
+            }
+        }};
     }
     if tokens.len() != M {
         panic!("Error: `M` must be equal to the number of tokens.");
@@ -620,4 +618,60 @@ pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
         table: table,
         terminal_states: terminal_states,
     };
+}
+
+pub struct Lexer {}
+
+const TOKEN_MAX_LEN: usize = 4096;
+
+impl Lexer {
+    pub fn run<'a, const N: usize, const M: usize>(
+        input: &str,
+        table: &TransitionTable<'a, N, M>,
+    ) -> Result<Vec<(&'a str, String)>, String> {
+        let mut token_buf: [char; TOKEN_MAX_LEN + 1] =
+            ['\0'; TOKEN_MAX_LEN + 1];
+        let mut token_len: usize = 0;
+        let mut tokens_found: Vec<(&'a str, String)> = vec![];
+        let mut state: State = START_STATE;
+        // A trailing '\0' terminates the last token, so it must be a delimiter
+        // of every token.
+        for c in input.chars().chain(std::iter::once('\0')) {
+            // Input already ended on a delimiter: nothing left to terminate.
+            if c == '\0' && state == START_STATE {
+                break;
+            }
+            state = transition(state, c as u8, &table.table);
+            match state {
+                INVALID_STATE => {
+                    return Err(format!(
+                        "Error: input string is not a valid string; unexpected character `{}`", c));
+                }
+                _ if state < -1 => {
+                    let label = match table
+                        .terminal_states
+                        .iter()
+                        .find(|(terminal_state, _)| *terminal_state == state)
+                    {
+                        Some((_, label)) => *label,
+                        None => {
+                            return Err(format!(
+                                "Error: no token label found for terminal state `{}`",
+                                state
+                            ));
+                        }
+                    };
+                    tokens_found
+                        .push((label, token_buf[..token_len].iter().collect()));
+                    state = START_STATE;
+                    token_len = 0;
+                }
+                _ => {
+                    token_buf[token_len] = c;
+                    token_len += 1;
+                }
+            }
+        }
+        return Ok(tokens_found);
+    }
 }
