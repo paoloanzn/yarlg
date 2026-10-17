@@ -9,6 +9,7 @@ readme = "README.md"
 keywords = ["lexer", "library", "compiler", "dfa", "nfa"]
 license = "MIT"
 exclude = [".github"]
+documentation = "https://docs.rs/yarlg"
 
 [dependencies]
 # none :)
