@@ -45,16 +45,9 @@ pub fn main() {
     };
     println!("Bytes read: {} Bytes\nFile:\n{}", bytes_read, readable_buf);
 
-    let digit = match yarlg::AsciiCharacterRange::new()
+    let digit = yarlg::AsciiCharacterRange::new()
         .with_start('0' as u8).with_end('9' as u8)
-        .build()
-    {
-        Ok(range) => range,
-        Err(error) => {
-            eprint!("Error: Error creating AsciiCharacterRange: {}", error);
-            panic!("An unexpected error occurred.")
-        }
-    };
+        .build();
     let group = yarlg::group!(digit, yarlg::CharacterGroupType::AtLeastOne);
     println!("NUMBER: {}", group);
 }

@@ -39,49 +39,23 @@ impl AsciiCharacterRange {
         self
     }
 
-    pub fn build(self) -> Result<Self, String> {
-        match (self.start, self.end) {
-            (Some(start), Some(end)) => {
-                if end >= TRANSITIONS_PER_STATE {
-                    return Err(format!(
-                        "Error: `end`({}) is over the max allowed value({})",
-                        end, TRANSITIONS_PER_STATE
-                    ));
-                }
-                if start >= TRANSITIONS_PER_STATE {
-                    return Err(format!(
-                        "Error: `start`({}) is over the max allowed value({})",
-                        start, TRANSITIONS_PER_STATE
-                    ));
-                }
-                if start > end {
-                    return Err(format!(
-                        "Error: `start`({}) can't be greater than `end`({})",
-                        start, end
-                    ));
-                }
-                return Ok(self);
+    pub const fn build(self) -> Self {
+        if let Some(start) = self.start {
+            if start >= TRANSITIONS_PER_STATE {
+                panic!("Error: `start` is over the max allowed value (127)");
             }
-            (Some(start), None) => {
-                if start >= TRANSITIONS_PER_STATE {
-                    return Err(format!(
-                        "Error: `start`({}) is over the max allowed value({})",
-                        start, TRANSITIONS_PER_STATE
-                    ));
-                }
-                return Ok(self);
-            }
-            (None, Some(end)) => {
-                if end >= TRANSITIONS_PER_STATE {
-                    return Err(format!(
-                        "Error: `end`({}) is over the max allowed value({})",
-                        end, TRANSITIONS_PER_STATE
-                    ));
-                }
-                return Ok(self);
-            }
-            (None, None) => return Ok(self),
         }
+        if let Some(end) = self.end {
+            if end >= TRANSITIONS_PER_STATE {
+                panic!("Error: `end` is over the max allowed value (127)");
+            }
+        }
+        if let (Some(start), Some(end)) = (self.start, self.end) {
+            if start > end {
+                panic!("Error: `start` can't be greater than `end`");
+            }
+        }
+        return self;
     }
 }
 
@@ -473,7 +447,7 @@ fn transition(state_in: State, char: u8, table: &[State]) -> State {
     };
 }
 
-// The lexer DFA. 
+// The lexer DFA.
 // `N` is the table size (states * `TRANSITIONS_PER_STATE`).
 // `M` the number of tokens.
 //
@@ -514,7 +488,9 @@ const fn groups_transitions(groups: &[CharacterGroup]) -> usize {
                 (None, None) => 0,
             };
             match group.group_type {
-                CharacterGroupType::AtLeastOne => num_transitions += 2 * range_len,
+                CharacterGroupType::AtLeastOne => {
+                    num_transitions += 2 * range_len
+                }
                 CharacterGroupType::ExactlyOne => num_transitions += range_len,
                 CharacterGroupType::ZeroOrMore => num_transitions += range_len,
             }
@@ -525,7 +501,7 @@ const fn groups_transitions(groups: &[CharacterGroup]) -> usize {
     return num_transitions;
 }
 
-// Total number of states of the DFA. 
+// Total number of states of the DFA.
 // The start state 0 is shared by every token.
 pub const fn count_states(tokens: &[Token]) -> usize {
     let mut total_states: usize = 0;
@@ -545,8 +521,8 @@ pub const fn max_token_transitions(tokens: &[Token]) -> usize {
     let mut i: usize = 0;
     while i < tokens.len() {
         let token = &tokens[i];
-        let num_transitions =
-            groups_transitions(token.groups) + groups_transitions(token.delimiters);
+        let num_transitions = groups_transitions(token.groups)
+            + groups_transitions(token.delimiters);
         if num_transitions > max {
             max = num_transitions;
         }
@@ -618,17 +594,25 @@ pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
     }
     let mut table: [State; N] = [INVALID_STATE; N];
     let mut terminal_states: [(State, &'a str); M] = [(INVALID_STATE, ""); M];
-    let mut transition_buffer: [(State, char, State); T] = [(0, 0 as char, 0); T];
+    let mut transition_buffer: [(State, char, State); T] =
+        [(0, 0 as char, 0); T];
     let mut total_states: usize = 0;
     let mut i: usize = 0;
     while i < tokens.len() {
         let token = &tokens[i];
-        let (num_states, num_transitions) = token.build_transitions(&mut transition_buffer);
+        let (num_states, num_transitions) =
+            token.build_transitions(&mut transition_buffer);
         total_states += num_states;
         if i > 0 {
             total_states -= 1;
         }
-        set_transitions!(table, transition_buffer, total_states, num_states, num_transitions);
+        set_transitions!(
+            table,
+            transition_buffer,
+            total_states,
+            num_states,
+            num_transitions
+        );
         terminal_states[i] = (-((total_states - 1) as isize), token.label);
         i += 1;
     }
