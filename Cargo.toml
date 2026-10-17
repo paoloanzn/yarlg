@@ -1,15 +1,26 @@
 [package]
 name = "yarlg"
-description = "DFA lexer generator"
+description = "A blazingly fast Lexer generator library."
+authors = ["Paolo Anzani <paoloanzn@gmail.com>"]
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/paoloanzn/yarlg"
+readme = "README.md"
+keywords = ["lexer", "library", "compiler", "dfa", "nfa"]
+license = "MIT"
 
 [dependencies]
+# none :)
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
 
 [[bin]]
 name = "test"
-path = "test.rs"
+path = "src/test.rs"
 test = false
 
 [lib]
-path = "yarlg.rs"
+path = "src/yarlg.rs"

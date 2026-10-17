@@ -1,24 +1,126 @@
-// yarlg.rs: Yet another Rust lexer generator.
+//! yarlg.rs: Yet another Rust lexer generator.
+//!
+//! `yarlg` builds the transition table of a lexer DFA entirely at compile
+//! time from a `const` description of your tokens. At runtime, lexing is a
+//! single table lookup per input character.
+//!
+//! # Overview
+//!
+//! A lexer is described bottom-up:
+//!
+//! 1. [`AsciiCharacterRange`]: a contiguous range of ASCII characters
+//!    (`'0'...'9'`) or a single character (`' '`).
+//! 2. [`CharacterGroup`]: a set of ranges plus a repetition
+//!    ([`CharacterGroupType`]), usually created with the [`group!`] macro.
+//!    `{'a'...'z', 'A'...'Z'}+` is one group.
+//! 3. [`Token`]: a label, a sequence of groups that the token must match in
+//!    order, and the delimiter groups that end it.
+//! 4. [`table_init!`]: turns a `const` slice of tokens into a `const`
+//!    [`TransitionTable`].
+//! 5. [`Lexer::run`]: lexes a string with that table.
+//!
+//! # Example
+//!
+//! ```
+//! use yarlg::{AsciiCharacterRange, CharacterGroupType, Token, group, table_init};
+//!
+//! const DIGIT: AsciiCharacterRange =
+//!     AsciiCharacterRange::new().with_start(b'0').with_end(b'9').build();
+//! const LOWER: AsciiCharacterRange =
+//!     AsciiCharacterRange::new().with_start(b'a').with_end(b'z').build();
+//! const SPACE: AsciiCharacterRange =
+//!     AsciiCharacterRange::new().with_start(b' ').build();
+//! // End of input is signalled with '\0', see `Lexer::run`.
+//! const NULL: AsciiCharacterRange =
+//!     AsciiCharacterRange::new().with_start(b'\0').build();
+//!
+//! // NUMBER {'0'...'9'}+ followed by ' ' or end of input
+//! // IDENT  {'a'...'z'}+ followed by ' ' or end of input
+//! const TOKENS: &[Token] = &[
+//!     Token::new(
+//!         "NUMBER",
+//!         &[group!(DIGIT, CharacterGroupType::AtLeastOne)],
+//!         &[
+//!             group!(SPACE, CharacterGroupType::ExactlyOne),
+//!             group!(NULL, CharacterGroupType::ExactlyOne),
+//!         ],
+//!     ),
+//!     Token::new(
+//!         "IDENT",
+//!         &[group!(LOWER, CharacterGroupType::AtLeastOne)],
+//!         &[
+//!             group!(SPACE, CharacterGroupType::ExactlyOne),
+//!             group!(NULL, CharacterGroupType::ExactlyOne),
+//!         ],
+//!     ),
+//! ];
+//!
+//! table_init!(LEXER, TOKENS);
+//!
+//! let tokens = yarlg::Lexer::run("42 foo 7", &LEXER).unwrap();
+//! assert_eq!(
+//!     tokens,
+//!     vec![
+//!         ("NUMBER", String::from("42")),
+//!         ("IDENT", String::from("foo")),
+//!         ("NUMBER", String::from("7")),
+//!     ]
+//! );
+//!
+//! // Uppercase letters are not part of any token.
+//! assert!(yarlg::Lexer::run("42 Foo", &LEXER).is_err());
+//! ```
+//!
+//! # Limitations
+//!
+//! - Only ASCII input (`0..=127`) is supported.
+//! - A single token can be at most 4096 characters long.
 
 use std::fmt::{self, Debug};
 
-// Ordinal continguos range of ASCII characters.
-// '0'...'9', 'a'...'z'
+/// A contiguous range of ASCII characters, or a single ASCII character.
+///
+/// A range is built with [`new`](Self::new), optionally given a
+/// [`start`](Self::with_start) and an [`end`](Self::with_end), and validated
+/// with [`build`](Self::build). Depending on which bounds are set it matches:
+///
+/// | `start` | `end`  | matches                          |
+/// |---------|--------|----------------------------------|
+/// | `Some`  | `Some` | every character in `start..=end` |
+/// | `Some`  | `None` | only `start`                     |
+/// | `None`  | `Some` | only `end`                       |
+/// | `None`  | `None` | nothing                          |
+///
+/// All constructors are `const fn`, so ranges are normally declared as
+/// `const` items and validated at compile time.
+///
+/// # Examples
+///
+/// ```
+/// use yarlg::AsciiCharacterRange;
+///
+/// // DIGIT '0'...'9'
+/// const DIGIT: AsciiCharacterRange =
+///     AsciiCharacterRange::new().with_start(b'0').with_end(b'9').build();
+/// // SPACE ' '
+/// const SPACE: AsciiCharacterRange =
+///     AsciiCharacterRange::new().with_start(b' ').build();
+///
+/// assert_eq!(DIGIT.to_string(), "'0'...'9'");
+/// assert_eq!(SPACE.to_string(), "' '");
+/// ```
 #[derive(Debug, Default)]
 pub struct AsciiCharacterRange {
     start: Option<u8>,
     end: Option<u8>,
 }
 
-// A range can contain 1, 2 or zero elements.
-// You can create a range like this:
-// `yarlg::AsciiCharacterRange::new()
-//      .with_start('0' as u8).with_end('9' as u8)
-//      .build()`
-//
-// `start` can never be greater than `end` and neither
-// of them can be ge than `TRANSITIONS_PER_STATE`.
 impl AsciiCharacterRange {
+    /// Creates an empty range with neither `start` nor `end` set.
+    ///
+    /// An empty range matches no character. Set its bounds with
+    /// [`with_start`](Self::with_start) and [`with_end`](Self::with_end),
+    /// then call [`build`](Self::build).
     pub const fn new() -> Self {
         return Self {
             start: None,
@@ -26,16 +128,35 @@ impl AsciiCharacterRange {
         };
     }
 
+    /// Sets the first character of the range (inclusive).
+    ///
+    /// If no `end` is set, the range matches only this character.
     pub const fn with_start(mut self, start: u8) -> Self {
         self.start = Some(start);
         self
     }
 
+    /// Sets the last character of the range (inclusive).
     pub const fn with_end(mut self, end: u8) -> Self {
         self.end = Some(end);
         self
     }
 
+    /// Validates the range and returns it.
+    ///
+    /// Always call `build` last. In a `const` context, an invalid range
+    /// fails compilation.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `start` or `end` is not ASCII (greater than 127), or if
+    /// `start` is greater than `end`.
+    ///
+    /// ```compile_fail
+    /// // 'z' > 'a': rejected at compile time.
+    /// const BAD: yarlg::AsciiCharacterRange =
+    ///     yarlg::AsciiCharacterRange::new().with_start(b'z').with_end(b'a').build();
+    /// ```
     pub const fn build(self) -> Self {
         if let Some(start) = self.start {
             if start >= TRANSITIONS_PER_STATE {
@@ -75,20 +196,63 @@ impl fmt::Display for AsciiCharacterRange {
     }
 }
 
+/// How many characters a [`CharacterGroup`] matches.
 pub enum CharacterGroupType {
-    ExactlyOne, // {}
-    AtLeastOne, // {}+
-    ZeroOrMore, // {}*
+    /// Exactly one character from the group: `{...}`.
+    ExactlyOne,
+    /// One or more characters from the group: `{...}+`.
+    AtLeastOne,
+    /// Zero or more characters from the group: `{...}*`.
+    ///
+    /// Not allowed as a [`Token`] delimiter.
+    ZeroOrMore,
 }
 
-// Set of ranges of ASCII characters.
-// {0..9, a...z, A...Z}+
+/// A set of ASCII character ranges with a repetition, such as
+/// `{'0'...'9', 'a'...'z', 'A'...'Z'}+`.
+///
+/// A character matches the group if it falls in any of its `ranges`;
+/// `group_type` says how many such characters are matched. Groups are
+/// usually created with the [`group!`] macro and used to describe the body
+/// and the delimiters of a [`Token`].
+///
+/// # Examples
+///
+/// ```
+/// use yarlg::{AsciiCharacterRange, CharacterGroupType, group};
+///
+/// const LOWER: AsciiCharacterRange =
+///     AsciiCharacterRange::new().with_start(b'a').with_end(b'z').build();
+/// const UNDERSCORE: AsciiCharacterRange =
+///     AsciiCharacterRange::new().with_start(b'_').build();
+///
+/// let word = group!(LOWER UNDERSCORE, CharacterGroupType::AtLeastOne);
+/// assert_eq!(word.to_string(), "{'a'...'z', '_'}+");
+/// ```
 pub struct CharacterGroup<'a> {
+    /// The ranges a character can belong to.
     pub ranges: &'a [AsciiCharacterRange],
+    /// How many characters from `ranges` the group matches.
     pub group_type: CharacterGroupType,
 }
 
-// Creates a new CharacterGroup by passing ranges and a CharacterGroupType.
+/// Creates a [`CharacterGroup`] from one or more [`AsciiCharacterRange`]s
+/// and a [`CharacterGroupType`].
+///
+/// Ranges are separated by whitespace; the group type comes last, after a
+/// comma:
+///
+/// ```
+/// use yarlg::{AsciiCharacterRange, CharacterGroupType, group};
+///
+/// const DIGIT: AsciiCharacterRange =
+///     AsciiCharacterRange::new().with_start(b'0').with_end(b'9').build();
+/// const LOWER: AsciiCharacterRange =
+///     AsciiCharacterRange::new().with_start(b'a').with_end(b'z').build();
+///
+/// let number = group!(DIGIT, CharacterGroupType::AtLeastOne);
+/// let alnum = group!(DIGIT LOWER, CharacterGroupType::ZeroOrMore);
+/// ```
 #[macro_export]
 macro_rules! group {
     ($($arg:expr)+, $type:expr $(,)?) => {
@@ -131,6 +295,16 @@ impl<'a> fmt::Display for CharacterGroup<'a> {
     }
 }
 
+/// A token definition: a label, the groups it is made of and the delimiters
+/// that end it.
+///
+/// Input matches the token when it matches each of `groups` in order and is
+/// then followed by a character matched by any of `delimiters`. The
+/// delimiter is consumed but not included in the token text returned by
+/// [`Lexer::run`].
+///
+/// Tokens are declared in a `const` slice and passed to [`table_init!`].
+/// See the [crate-level example](crate#example).
 pub struct Token<'a> {
     label: &'a str,
     groups: &'a [CharacterGroup<'a>],
@@ -140,6 +314,20 @@ pub struct Token<'a> {
 }
 
 impl<'a> Token<'a> {
+    /// Creates a new token definition.
+    ///
+    /// - `label`: the name reported by [`Lexer::run`] for this token.
+    /// - `groups`: the groups the token body must match, in order.
+    /// - `delimiters`: groups that end the token. Any one of them ends it.
+    ///
+    /// To accept the token at the end of the input, include a delimiter
+    /// that matches `'\0'` (see [`Lexer::run`]).
+    ///
+    /// # Panics
+    ///
+    /// The definition is checked when the table is built by
+    /// [`table_init!`], not here: a delimiter group of type
+    /// [`CharacterGroupType::ZeroOrMore`] fails compilation there.
     pub const fn new(
         label: &'a str,
         groups: &'a [CharacterGroup],
@@ -415,6 +603,10 @@ impl<'a> Token<'a> {
     }
 }
 
+/// A DFA state in a [`TransitionTable`].
+///
+/// `-1` is the invalid state. Other negative values mark accepting
+/// (terminal) states.
 pub type State = isize;
 const INVALID_STATE: isize = -1;
 const START_STATE: State = 0;
@@ -430,6 +622,10 @@ const fn compute_index(state: State, char: u8) -> usize {
 // needed for the lexer DFA.
 // Each state needs to have is corresponding transition function result for every
 // possible ASCII character value, defined as `TRANSITIONS_PER_STATE`.
+/// Returns the number of entries in a [`TransitionTable`] with
+/// `number_of_states` states (128 entries per state).
+///
+/// Used by [`table_init!`]; you don't normally call it directly.
 pub const fn compute_table_size(number_of_states: usize) -> usize {
     return number_of_states as usize * TRANSITIONS_PER_STATE as usize;
 }
@@ -447,14 +643,19 @@ fn transition(state_in: State, char: u8, table: &[State]) -> State {
     };
 }
 
-// The lexer DFA.
-// `N` is the table size (states * `TRANSITIONS_PER_STATE`).
-// `M` the number of tokens.
-//
 // Terminal states are stored as negative values: a transition into -4 means
 // "token accepted"; its outgoing transitions are still at row 4.
+/// The compiled lexer DFA.
+///
+/// Create it with [`table_init!`] and pass it to [`Lexer::run`].
+///
+/// - `N` is the table size: number of states × 128 ASCII characters.
+/// - `M` is the number of tokens.
 pub struct TransitionTable<'a, const N: usize, const M: usize> {
+    /// Flat transition table: the next state for `(state, c)` is at
+    /// `state * 128 + c`. `-1` means no transition.
     pub table: [State; N],
+    /// The accepting state of each token, paired with the token label.
     pub terminal_states: [(State, &'a str); M],
 }
 
@@ -501,8 +702,10 @@ const fn groups_transitions(groups: &[CharacterGroup]) -> usize {
     return num_transitions;
 }
 
-// Total number of states of the DFA.
-// The start state `START_STATE` is shared by every token.
+/// Returns the total number of states of the DFA for `tokens`.
+///
+/// The start state is shared by every token. Used by [`table_init!`]; you
+/// don't normally call it directly.
 pub const fn count_states(tokens: &[Token]) -> usize {
     let mut total_states: usize = 0;
     let mut i: usize = 0;
@@ -516,6 +719,10 @@ pub const fn count_states(tokens: &[Token]) -> usize {
     return total_states;
 }
 
+/// Returns the largest number of transitions generated by a single token.
+///
+/// Sizes the scratch buffer of [`build_table`]. Used by [`table_init!`];
+/// you don't normally call it directly.
 pub const fn max_token_transitions(tokens: &[Token]) -> usize {
     let mut max: usize = 0;
     let mut i: usize = 0;
@@ -531,9 +738,24 @@ pub const fn max_token_transitions(tokens: &[Token]) -> usize {
     return max;
 }
 
-// Defines a `const` TransitionTable called `$name` built from `$tokens`,
-// which must be a `const` of type `&[Token]`.
-// `table_init!(LEXER, TOKENS);`
+/// Defines a `const` [`TransitionTable`] named `$name` from `$tokens`.
+///
+/// `$tokens` must be a `const` of type `&[Token]`. The table is computed
+/// entirely at compile time, and its sizes are derived from the token
+/// definitions, so you never write the generic parameters yourself.
+///
+/// ```ignore
+/// table_init!(LEXER, TOKENS);
+/// let tokens = yarlg::Lexer::run("42 foo", &LEXER);
+/// ```
+///
+/// See the [crate-level example](crate#example) for a complete lexer.
+///
+/// # Panics
+///
+/// Since the table is a `const`, an invalid token definition fails
+/// compilation; for example, a delimiter group of type
+/// [`CharacterGroupType::ZeroOrMore`].
 #[macro_export]
 macro_rules! table_init {
     // @paoloanzn: this macro was written by claude after countless hours of pain.
@@ -550,8 +772,16 @@ macro_rules! table_init {
     };
 }
 
-// `N`: table size, `M`: number of tokens, `T`: transition buffer size.
-// Use `table_init!` instead of calling this directly.
+/// Builds the [`TransitionTable`] for `tokens`.
+///
+/// `N` is the table size, `M` the number of tokens and `T` the size of the
+/// scratch transition buffer. Use [`table_init!`] instead of calling this
+/// directly: it computes all three for you.
+///
+/// # Panics
+///
+/// Panics if `M` differs from `tokens.len()` or if a token has a
+/// [`CharacterGroupType::ZeroOrMore`] delimiter.
 pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
     tokens: &'a [Token<'a>],
 ) -> TransitionTable<'a, N, M> {
@@ -620,11 +850,56 @@ pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
     };
 }
 
+/// Runs a lexer built with [`table_init!`] on input strings.
 pub struct Lexer {}
 
 const TOKEN_MAX_LEN: usize = 4096;
 
 impl Lexer {
+    /// Splits `input` into tokens using `table`.
+    ///
+    /// Returns the tokens in input order as `(label, text)` pairs, where
+    /// `label` is the [`Token`] label and `text` is the matched text
+    /// without its delimiter.
+    ///
+    /// The end of the input is signalled by a trailing `'\0'`. If the input
+    /// does not already end with a delimiter, the last token is accepted only
+    /// if one of its delimiters matches `'\0'`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `input` contains a character that no
+    /// token accepts at that position, or if it ends in the middle of a
+    /// token that has no `'\0'` delimiter.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a single token is longer than 4096 characters.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use yarlg::{AsciiCharacterRange, CharacterGroupType, Token, group, table_init};
+    ///
+    /// const DIGIT: AsciiCharacterRange =
+    ///     AsciiCharacterRange::new().with_start(b'0').with_end(b'9').build();
+    /// const COMMA: AsciiCharacterRange =
+    ///     AsciiCharacterRange::new().with_start(b',').build();
+    ///
+    /// // NUMBER {'0'...'9'}+ ','  (no '\0' delimiter)
+    /// const TOKENS: &[Token] = &[Token::new(
+    ///     "NUMBER",
+    ///     &[group!(DIGIT, CharacterGroupType::AtLeastOne)],
+    ///     &[group!(COMMA, CharacterGroupType::ExactlyOne)],
+    /// )];
+    /// table_init!(LEXER, TOKENS);
+    ///
+    /// let tokens = yarlg::Lexer::run("1,22,", &LEXER).unwrap();
+    /// assert_eq!(tokens, vec![("NUMBER", "1".into()), ("NUMBER", "22".into())]);
+    ///
+    /// // The last token is not followed by ',' and NUMBER has no '\0' delimiter.
+    /// assert!(yarlg::Lexer::run("1,22", &LEXER).is_err());
+    /// ```
     pub fn run<'a, const N: usize, const M: usize>(
         input: &str,
         table: &TransitionTable<'a, N, M>,
