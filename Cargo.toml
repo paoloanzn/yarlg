@@ -17,10 +17,5 @@ opt-level = 3
 lto = true
 codegen-units = 1
 
-[[bin]]
-name = "test"
-path = "src/test.rs"
-test = false
-
 [lib]
 path = "src/yarlg.rs"
