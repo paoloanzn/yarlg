@@ -9,7 +9,7 @@
 //! A lexer is described bottom-up:
 //!
 //! 1. [`AsciiCharacterRange`]: a contiguous range of ASCII characters
-//!    (`'0'...'9'`) or a single character (`' '`).
+//!    (`'0'...'9'`) or a single character (`'a'`).
 //! 2. [`CharacterGroup`]: a set of ranges plus a repetition
 //!    ([`CharacterGroupType`]), usually created with the [`group!`] macro.
 //!    `{'a'...'z', 'A'...'Z'}+` is one group.
