@@ -8,6 +8,7 @@ repository = "https://github.com/paoloanzn/yarlg"
 readme = "README.md"
 keywords = ["lexer", "library", "compiler", "dfa", "nfa"]
 license = "MIT"
+exclude = [".github"]
 
 [dependencies]
 # none :)
