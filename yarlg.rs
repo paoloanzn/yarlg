@@ -1,8 +1,6 @@
 // yarlg.rs: Yet another Rust lexer generator.
 
-use std::{
-    fmt::{self, Debug},
-};
+use std::fmt::{self, Debug};
 
 // Ordinal continguos range of ASCII characters.
 // '0'...'9', 'a'...'z'
@@ -312,7 +310,9 @@ impl<'a> Token<'a> {
         while delimiter_index < self.delimiters.len() {
             let delimiter = &self.delimiters[delimiter_index];
             if let CharacterGroupType::ZeroOrMore = delimiter.group_type {
-                panic!("Error: delimiter groups cannot be ZeroOrMore, a delimiter is always required.");
+                panic!(
+                    "Error: delimiter groups cannot be ZeroOrMore, a delimiter is always required."
+                );
             }
             let mut range_index: usize = 0;
             while range_index < delimiter.ranges.len() {
@@ -645,7 +645,9 @@ impl Lexer {
             match state {
                 INVALID_STATE => {
                     return Err(format!(
-                        "Error: input string is not a valid string; unexpected character `{}`", c));
+                        "Error: input string is not a valid string; unexpected character `{}`",
+                        c
+                    ));
                 }
                 _ if state < -1 => {
                     let label = match table
