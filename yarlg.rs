@@ -1,8 +1,6 @@
 // yarlg.rs: Yet another Rust lexer generator.
 
-use std::{
-    fmt::{self, Debug},
-};
+use std::fmt::{self, Debug};
 
 // Ordinal continguos range of ASCII characters.
 // '0'...'9', 'a'...'z'
@@ -136,7 +134,7 @@ impl<'a> CharacterGroup<'a> {
             }
             match write!(&mut out, "{}", item) {
                 Ok(res) => res,
-                Err(error ) => {
+                Err(error) => {
                     panic!("An unexpected error occured: {}", error);
                 }
             }
@@ -160,15 +158,15 @@ impl<'a> fmt::Display for CharacterGroup<'a> {
 
 struct Token<'a> {
     label: &'a str,
-    ranges: &'a [CharacterGroup<'a>],
+    groups: &'a [CharacterGroup<'a>],
 }
 
 impl<'a> Token<'a> {
-    pub fn new(label: &'a str, ranges: &'a [CharacterGroup]) -> Self {
+    pub fn new(label: &'a str, groups: &'a [CharacterGroup]) -> Self {
         return Self {
             label: label,
-            ranges: ranges
-        }
+            groups: groups,
+        };
     }
 }
 
