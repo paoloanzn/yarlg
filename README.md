@@ -165,7 +165,6 @@ No branches on the character class, no allocations: one character in, one array 
 ## Docs
 
 - [**API docs**](https://paoloanzn.github.io/yarlg/)
-- [**Tests**](tests/lexer.rs)
 
 ---
 
