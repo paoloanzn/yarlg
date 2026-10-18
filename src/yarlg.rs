@@ -508,22 +508,6 @@ pub struct TransitionTable<'a, const N: usize, const M: usize> {
     pub terminal_states: [(State, &'a str); M],
 }
 
-// Number of local states `Token::build_transitions` produces for `token`.
-#[doc(hidden)]
-const fn token_states(token: &Token) -> usize {
-    let mut num_states: usize = 2;
-    let mut i: usize = 0;
-    while i < token.groups.len() {
-        match token.groups[i].group_type {
-            CharacterGroupType::AtLeastOne => num_states += 1,
-            CharacterGroupType::ExactlyOne => num_states += 1,
-            CharacterGroupType::ZeroOrMore => num_states += 0,
-        }
-        i += 1;
-    }
-    return num_states;
-}
-
 // Number of transitions `Token::build_transitions` writes for `groups`.
 #[doc(hidden)]
 const fn groups_transitions(groups: &[CharacterGroup]) -> usize {
@@ -553,18 +537,47 @@ const fn groups_transitions(groups: &[CharacterGroup]) -> usize {
     return num_transitions;
 }
 
+// Default max number of states the tmp table can use.
+// This **is not** the allocated space for the final Lexer table.
 #[doc(hidden)]
-pub const fn count_states(tokens: &[Token]) -> usize {
-    let mut total_states: usize = 0;
-    let mut i: usize = 0;
-    while i < tokens.len() {
-        total_states += token_states(&tokens[i]);
-        if i > 0 {
-            total_states -= 1;
-        }
-        i += 1;
+pub const MAX_STATES: usize = 1024;
+
+// Fails compilation if `table` has no room for `num_states` states.
+//
+// MAX_STATES defines an already generous allocated space for the tmp table,
+// but we give the option to the user to optionally override the value manually
+// when calling table_init!
+#[doc(hidden)]
+const fn check_table_space(table: &[State], num_states: usize) {
+    if compute_table_size(num_states) > table.len() {
+        panic!(
+            "Error: the lexer needs more states than `max_states` allows. Increase it: table_init!(NAME, TOKENS, max_states = <bigger value>)"
+        );
     }
-    return total_states;
+}
+
+// Counts the states needed by `tokens` by building them into a tmp table.
+#[doc(hidden)]
+pub const fn count_states<
+    const T: usize,
+    const MAX: usize,
+    const SIZE: usize,
+>(
+    tokens: &[Token],
+) -> usize {
+    if tokens.len() > MAX {
+        panic!(
+            "Error: more tokens than `max_states` allows. Increase it: table_init!(NAME, TOKENS, max_states = <bigger value>)"
+        );
+    }
+    let mut scratch: [State; SIZE] = [INVALID_STATE; SIZE];
+    let mut scratch_terminal_states: [(State, &str); MAX] =
+        [(INVALID_STATE, ""); MAX];
+    return add_transitions_to_table::<T, MAX>(
+        tokens,
+        &mut scratch,
+        &mut scratch_terminal_states,
+    );
 }
 
 #[doc(hidden)]
@@ -600,67 +613,139 @@ pub const fn max_token_transitions(tokens: &[Token]) -> usize {
 #[macro_export]
 macro_rules! table_init {
     // @paoloanzn: this macro was written by claude after countless hours of pain.
-    ($name:ident, $tokens:expr $(,)?) => {
+    ($name:ident, $tokens:expr, max_states = $max:expr $(,)?) => {
         const $name: $crate::TransitionTable<
             'static,
-            { $crate::compute_table_size($crate::count_states($tokens)) },
+            {
+                $crate::compute_table_size($crate::count_states::<
+                    { $crate::max_token_transitions($tokens) },
+                    { $max },
+                    { $crate::compute_table_size($max) },
+                >($tokens))
+            },
             { $tokens.len() },
         > = $crate::build_table::<
-            { $crate::compute_table_size($crate::count_states($tokens)) },
+            {
+                $crate::compute_table_size($crate::count_states::<
+                    { $crate::max_token_transitions($tokens) },
+                    { $max },
+                    { $crate::compute_table_size($max) },
+                >($tokens))
+            },
             { $tokens.len() },
             { $crate::max_token_transitions($tokens) },
+            { $max },
         >($tokens);
+    };
+    ($name:ident, $tokens:expr $(,)?) => {
+        $crate::table_init!($name, $tokens, max_states = $crate::MAX_STATES);
     };
 }
 
-/// Builds the [`TransitionTable`] for `tokens`.
-///
-/// **Do not** call this function directly, instead use [`table_init!`].
-pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
+// Merges the `old` and `new` states into one single state that has the transitions of both.
+// If both `old` and `new` are terminal states, `new` wins, this means that
+// `yarlg` use a "last-declared-wins" approach for conflicting tokens.
+//
+// So the token definition order inside `const TOKENS: &[Token] = &[...];` before
+// passing it to `table_init!(LEXER, TOKENS)` **matters**.
+const fn merge(
+    table: &mut [State],
+    old: State,
+    new: State,
+    total_states: &mut usize,
+    merged: &mut [(State, State, State)],
+    num_merged: &mut usize,
+) -> State {
+    if new == INVALID_STATE {
+        return old;
+    }
+    if old == INVALID_STATE || old == new {
+        return new;
+    }
+    if old < 0 || new < 0 {
+        return if new < 0 { new } else { old };
+    }
+    let mut i: usize = 0;
+    while i < *num_merged {
+        if merged[i].0 == old && merged[i].1 == new {
+            return merged[i].2;
+        }
+        i += 1;
+    }
+    let state = *total_states as State;
+    *total_states += 1;
+    check_table_space(table, *total_states);
+    merged[*num_merged] = (old, new, state);
+    *num_merged += 1;
+    let mut c: u8 = 0;
+    while c < TRANSITIONS_PER_STATE {
+        let old_end = table[compute_index(old, c)];
+        let new_end = table[compute_index(new, c)];
+        table[compute_index(state, c)] =
+            merge(table, old_end, new_end, total_states, merged, num_merged);
+        c += 1;
+    }
+    return state;
+}
+
+// Adds every token's transitions to `table` and remembers final states in `terminal_states`.
+// Returns the total number of states used in `table`.
+#[doc(hidden)]
+const fn add_transitions_to_table<'a, const T: usize, const MAX: usize>(
     tokens: &'a [Token<'a>],
-) -> TransitionTable<'a, N, M> {
+    table: &mut [State],
+    terminal_states: &mut [(State, &'a str)],
+) -> usize {
     macro_rules! set_transitions {
-        ($table:expr, $buf:expr, $num_states:expr, $token_states:expr, $num_transitions:expr) => {{
+        ($table:expr, $buf:expr, $num_states:expr, $token_states:expr, $num_transitions:expr, $merged:expr, $num_merged:expr) => {{
             // Number of global states used before this token.
             // Only `START_STATE` is shared since it's unique for the whole DFA.
             let offset = ($num_states - $token_states) as isize;
-            let mut i: usize = 0;
-            while i < $num_transitions {
-                let (mut state_start, c, mut state_end) = $buf[i];
-                if state_start != START_STATE {
-                    state_start += offset;
-                }
-                // Terminal states are negative: shift their absolute value.
-                if state_end < 0 {
-                    state_end -= offset;
-                } else {
-                    state_end += offset;
-                }
-                let index = compute_index(state_start, c as u8);
-                if $table[index] != INVALID_STATE {
-                    let src = compute_index($table[index].abs(), 0);
-                    let dest = compute_index(state_end.abs(), 0);
-                    let mut k: usize = 0;
-                    while src != dest && k < TRANSITIONS_PER_STATE as usize {
-                        // Merge: never overwrite a transition already set.
-                        if $table[dest + k] == INVALID_STATE {
-                            $table[dest + k] = $table[src + k];
-                        }
-                        k += 1;
+            // We write the transitions in two passes:
+            // first the ones where `state_start` is not `START_STATE`, then the ones where it is.
+            //
+            // `START_STATE` is shared by all tokens, so writing its transitions can collide
+            // with a previous token. On a collision `merge` reads the transitions of `state_end`,
+            // so they must be **already** in the table.
+            let mut pass: usize = 0;
+            while pass < 2 {
+                let mut i: usize = 0;
+                while i < $num_transitions {
+                    let (mut state_start, c, mut state_end) = $buf[i];
+                    if (state_start == START_STATE) != (pass == 1) {
+                        i += 1;
+                        continue;
                     }
+                    if state_start != START_STATE {
+                        state_start += offset;
+                    }
+                    // Terminal states are negative: shift their absolute value.
+                    if state_end < 0 {
+                        state_end -= offset;
+                    } else {
+                        state_end += offset;
+                    }
+                    let index = compute_index(state_start, c as u8);
+                    let old_end = $table[index];
+                    $table[index] = merge(
+                        $table,
+                        old_end,
+                        state_end,
+                        &mut $num_states,
+                        &mut $merged,
+                        &mut $num_merged,
+                    );
+                    i += 1;
                 }
-                $table[index] = state_end;
-                i += 1;
+                pass += 1;
             }
         }};
     }
-    if tokens.len() != M {
-        panic!("Error: `M` must be equal to the number of tokens.");
-    }
-    let mut table: [State; N] = [INVALID_STATE; N];
-    let mut terminal_states: [(State, &'a str); M] = [(INVALID_STATE, ""); M];
     let mut transition_buffer: [(State, char, State); T] =
         [(0, 0 as char, 0); T];
+    let mut merged: [(State, State, State); MAX] =
+        [(INVALID_STATE, INVALID_STATE, INVALID_STATE); MAX];
+    let mut num_merged: usize = 0;
     let mut total_states: usize = 0;
     let mut i: usize = 0;
     while i < tokens.len() {
@@ -671,16 +756,45 @@ pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
         if i > 0 {
             total_states -= 1;
         }
+        check_table_space(table, total_states);
+        let final_state = total_states - 1;
         set_transitions!(
             table,
             transition_buffer,
             total_states,
             num_states,
-            num_transitions
+            num_transitions,
+            merged,
+            num_merged
         );
-        terminal_states[i] = (-((total_states - 1) as isize), token.label);
+        terminal_states[i] = (-(final_state as isize), token.label);
         i += 1;
     }
+    return total_states;
+}
+
+/// Builds the [`TransitionTable`] for `tokens`.
+///
+/// **Do not** call this function directly, instead use [`table_init!`].
+pub const fn build_table<
+    'a,
+    const N: usize,
+    const M: usize,
+    const T: usize,
+    const MAX: usize,
+>(
+    tokens: &'a [Token<'a>],
+) -> TransitionTable<'a, N, M> {
+    if tokens.len() != M {
+        panic!("Error: `M` must be equal to the number of tokens.");
+    }
+    let mut table: [State; N] = [INVALID_STATE; N];
+    let mut terminal_states: [(State, &'a str); M] = [(INVALID_STATE, ""); M];
+    add_transitions_to_table::<T, MAX>(
+        tokens,
+        &mut table,
+        &mut terminal_states,
+    );
     return TransitionTable {
         table: table,
         terminal_states: terminal_states,
