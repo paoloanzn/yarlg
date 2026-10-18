@@ -795,6 +795,17 @@ pub const fn build_table<
         &mut table,
         &mut terminal_states,
     );
+    // `START_STATE` is shared by all tokens, so any of the below specified
+    // leading chars are always added as a recursive self transition to `START_STATE`.
+    let leading_skip: [u8; 4] = [b' ', b'\t', b'\n', b'\r'];
+    let mut i: usize = 0;
+    while i < leading_skip.len() {
+        let index = compute_index(START_STATE, leading_skip[i]);
+        if table[index] == INVALID_STATE {
+            table[index] = START_STATE;
+        }
+        i += 1;
+    }
     return TransitionTable {
         table: table,
         terminal_states: terminal_states,
@@ -877,6 +888,7 @@ impl Lexer {
                     state = START_STATE;
                     token_len = 0;
                 }
+                START_STATE => {}
                 _ => {
                     token_buf[token_len] = c;
                     token_len += 1;
