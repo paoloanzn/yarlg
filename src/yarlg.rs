@@ -1,15 +1,15 @@
 //! # yarlg
-//! 
+//!
 //! _Blazingly fast Lexer generator._
 //!
 //! `yarlg` allows you to make Lexers that are built entirely at compile time.
-//! 
+//!
 //! To achieve this `yarlg` does the following:
-//! 
+//!
 //! + It turns Tokens defintions into a one single big [DFA](https://en.wikipedia.org/wiki/Deterministic_finite_automaton).
 //! + It turns it into a 1D array that lives pre-compiled in memory where every possible state transitions is already pre-compiled.
 //! + The resulting lexer process every character of the input string by doing a direct look up on that array.
-//! 
+//!
 //! As a result `yarlg` turns every single character processing into an O(1) operation and the complete input processing
 //! into an O(n) operation where n is the lenght of the input.
 //!
@@ -476,7 +476,7 @@ const fn compute_index(state: State, char: u8) -> usize {
 }
 
 // The table size is fixed and dependent from the amount of representable states
-// needed for the lexer DFA. Each state needs to have is corresponding transition 
+// needed for the lexer DFA. Each state needs to have is corresponding transition
 // function result for every possible ASCII character value, defined as `TRANSITIONS_PER_STATE`.
 pub const fn compute_table_size(number_of_states: usize) -> usize {
     return number_of_states as usize * TRANSITIONS_PER_STATE as usize;
@@ -586,7 +586,7 @@ pub const fn max_token_transitions(tokens: &[Token]) -> usize {
 /// Creates [`TransitionTable`], computed entirely at compile time.
 ///
 /// # Example
-/// 
+///
 /// ```ignore
 /// table_init!(LEXER, TOKENS);
 /// let tokens = yarlg::Lexer::run("42 foo", &LEXER);
@@ -595,7 +595,7 @@ pub const fn max_token_transitions(tokens: &[Token]) -> usize {
 /// See [README](https://github.com/paoloanzn/yarlg/blob/master/README.md) for a complete lexer example.
 ///
 /// # Panics
-/// 
+///
 /// Since the table is a `const`, an invalid token definition fails compilation.
 #[macro_export]
 macro_rules! table_init {
@@ -641,8 +641,11 @@ pub const fn build_table<'a, const N: usize, const M: usize, const T: usize>(
                     let src = compute_index($table[index].abs(), 0);
                     let dest = compute_index(state_end.abs(), 0);
                     let mut k: usize = 0;
-                    while k < TRANSITIONS_PER_STATE as usize {
-                        $table[dest + k] = $table[src + k];
+                    while src != dest && k < TRANSITIONS_PER_STATE as usize {
+                        // Merge: never overwrite a transition already set.
+                        if $table[dest + k] == INVALID_STATE {
+                            $table[dest + k] = $table[src + k];
+                        }
                         k += 1;
                     }
                 }
@@ -709,7 +712,7 @@ impl Lexer {
     ///     &[group!(COMMA, CharacterGroupType::ExactlyOne)],
     /// )
     /// ];
-    /// 
+    ///
     /// table_init!(LEXER, TOKENS);
     ///
     /// let tokens = yarlg::Lexer::run("1,22,", &LEXER).unwrap();
