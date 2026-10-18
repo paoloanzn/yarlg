@@ -1,172 +1,139 @@
 # yarlg
 
-> Yet another Rust lexer generator.
+<p align="center">
+<i>Blazingly fast Lexer generator.</i>
+<p align="center">
 
-`yarlg` is a **compile time** DFA lexer generator. The token definitions, the state machine and its transition table are all `const`, so the generated lexer is already a static array baked into the binary, and lexing is one array lookup per input character, O(1) time complexity for a single character transition and O(n) for a full input processing, where n is the number of characters of the input. Furthermore the crate has **zero** dependencies.
+**yarlg** allows you to make Lexers that are built entirely at compile time.
 
-> [!WARNING]
-> This version is still not 100% polished, expect possible errors, see [Limitations](#limitations). PRs are welcomed.
+To achieve this it does the following:
 
----
+- It turns Tokens defintions into a one single big DFA.
+- It turns it into a 1D array that lives pre-compiled in memory where every possible state transitions is already pre-compiled.
+- The resulting lexer process every character of the input string by doing a direct look up on that array.
 
-## TL;DR
-- [Installation](#installation)
-- [Usage](#usage)
-- [How it works](#how-it-works)
-- [Limitations](#limitations)
-- [Docs](#docs)
+As a result yarlg turns every single character processing into an _O(1)_ operation and the complete input processing into an _O(n)_ operation where _n_ is the lenght of the input.
 
----
+## Quickstart
 
-## Installation
+### Installing
 
 ```sh
 cargo add yarlg
 ```
 
-or add it to your `Cargo.toml` manually:
+### Example
 
-```toml
-[dependencies]
-yarlg = "0.1"
+Let's define the following lexer:
+
+```txt
+NUMBER = {0...9}+
+FLOAT = {0...9}+,".",{0...9}+
+OP = "+","-","/","*"
+EQ = "="
 ```
 
-`yarlg` needs **Rust 1.85** or newer.
-
-## Usage
-
-> Describe ranges, group them, build tokens out of groups, then let `table_init!` compile the whole thing into a lexer.
-
-A lexer that reads numbers and lowercase identifiers separated by spaces:
-
 ```rust
-use yarlg::{AsciiCharacterRange, CharacterGroupType, Lexer, Token, group, table_init};
+use yarlg::{
+    AsciiCharacterRange as range, 
+    CharacterGroupType, 
+    Lexer, 
+    Token, 
+    group, 
+    table_init
+};
 
-const DIGIT: AsciiCharacterRange = AsciiCharacterRange::new().with_start(b'0').with_end(b'9').build();
-const LOWER: AsciiCharacterRange = AsciiCharacterRange::new().with_start(b'a').with_end(b'z').build();
-const SPACE: AsciiCharacterRange = AsciiCharacterRange::new().with_start(b' ').build();
-const NULL: AsciiCharacterRange = AsciiCharacterRange::new().with_start(b'\0').build();
+// Define all ranges we need.
+const DIGIT:    range = range::new().with_start('0' as u8).with_end('9' as u8).build();
+const DOT:      range = range::new().with_start('.' as u8).build();
+const PLUS:     range = range::new().with_start('+' as u8).build();
+const MINUS:    range = range::new().with_start('-' as u8).build();
+const SLASH:    range = range::new().with_start('/' as u8).build();
+const STAR:     range = range::new().with_start('*' as u8).build();
+const EQUAL:    range = range::new().with_start('=' as u8).build();
+const SPACE:    range = range::new().with_start(' ' as u8).build();
+const NULL:     range = range::new().with_start('\0' as u8).build();
 
-// NUMBER {'0'...'9'}+ followed by ' ' or end of input
-// IDENT  {'a'...'z'}+ followed by ' ' or end of input
+// Put together ranges into groups and groups into tokens.
+//
+// SPACE & NULL (end of input) are common delimiters for every token,
+// but you can define anything you want as a delimiter.
 const TOKENS: &[Token] = &[
     Token::new(
         "NUMBER",
         &[group!(DIGIT, CharacterGroupType::AtLeastOne)],
-        &[group!(SPACE, CharacterGroupType::ExactlyOne), group!(NULL, CharacterGroupType::ExactlyOne)],
+        &[
+            group!(SPACE, CharacterGroupType::ExactlyOne),
+            group!(NULL, CharacterGroupType::ExactlyOne),
+        ],
     ),
     Token::new(
-        "IDENT",
-        &[group!(LOWER, CharacterGroupType::AtLeastOne)],
-        &[group!(SPACE, CharacterGroupType::ExactlyOne), group!(NULL, CharacterGroupType::ExactlyOne)],
+        "FLOAT",
+        &[
+            group!(DIGIT, CharacterGroupType::AtLeastOne),
+            group!(DOT, CharacterGroupType::ExactlyOne),
+            group!(DIGIT, CharacterGroupType::AtLeastOne),
+        ],
+        &[
+            group!(SPACE, CharacterGroupType::ExactlyOne),
+            group!(NULL, CharacterGroupType::ExactlyOne),
+        ],
+    ),
+    Token::new(
+        "OP",
+        &[group!(PLUS MINUS SLASH STAR, CharacterGroupType::ExactlyOne)],
+        &[
+            group!(SPACE, CharacterGroupType::ExactlyOne),
+            group!(NULL, CharacterGroupType::ExactlyOne),
+        ],
+    ),
+    Token::new(
+        "EQ",
+        &[group!(EQUAL, CharacterGroupType::ExactlyOne)],
+        &[
+            group!(SPACE, CharacterGroupType::ExactlyOne),
+            group!(NULL, CharacterGroupType::ExactlyOne),
+        ],
     ),
 ];
 
+// Create the Lexer, this runs entirely at compile time only.
 table_init!(LEXER, TOKENS);
 
 fn main() {
-    let tokens = Lexer::run("42 foo 7", &LEXER).unwrap();
-    println!("{:?}", tokens);
-    // [("NUMBER", "42"), ("IDENT", "foo"), ("NUMBER", "7")]
+    let tokens = Lexer::run("12 + 3.5 = 15.5", &LEXER).unwrap();
 
-    assert!(Lexer::run("42 Foo", &LEXER).is_err()); // 'F' is not part of any token
+    println!("{:?}", tokens);
+    // [("NUMBER", "12"), ("OP", "+"), ("FLOAT", "3.5"), ("EQ", "="), ("FLOAT", "15.5")]
+
+    assert!(Lexer::run("1 % 2", &LEXER).is_err()); // '%' is not part of any token
+    assert!(Lexer::run("1+2", &LEXER).is_err()); // tokens must be separated by ' '
 }
 ```
 
-There are only four building blocks:
-
-- `AsciiCharacterRange`: a contiguous range of ASCII characters, `'0'...'9'`, or a single one, `'a'`.
-- `group!`: a set of ranges with a type, `ExactlyOne` `{}`, `AtLeastOne` `{}+` or `ZeroOrMore` `{}*`. `group!(DIGIT LOWER, CharacterGroupType::AtLeastOne)` is `{'0'...'9', 'a'...'z'}+`.
-- `Token`: a label, the groups the token is made of **in order**, and the delimiter groups that end it. The delimiter is consumed but not returned in the token text.
-- `table_init!(NAME, TOKENS)`: defines a `const` transition table called `NAME`, ready for `Lexer::run`.
-
-`Lexer::run` returns the tokens as `(label, text)` pairs, or an error at the first character no token accepts.
-
 > [!IMPORTANT]
-> The end of the input is signalled with a trailing `'\0'`. If a token can be the last thing in the input, give it a delimiter that matches `'\0'` (the `NULL` range in the example), otherwise input like `"42 foo"` is rejected and only `"42 foo "` is accepted.
+> The end of the input is signalled with a trailing `'\0'`. Unless you know what you are doing always set 
+> `'\0'` as a delimiter for every token you define.
 
-## How it works
+### Know Limitations
 
-> The lexer goes like this: look at the char, look at the table & get the state, either fails, emit token and/or go on to the next char until the whole input is consumed.
+- Only ASCII input is supported (characters `0..=127`).
 
-### Tokens
+## Yarlg fast approach
 
-A range $r$ is an interval of ASCII codes:
+yarlg Lexer generation is based around a fixed _O(1)_ transition function. All the possible transtions
+for all possible states of the Lexer are stored as a flat 1-dimensional array, one row of 128 entries (one per ASCII character) for each state.
 
-$$
-r = [a, b] \subseteq \{0, \dots, 127\}, \qquad a \leq b
-$$
-
-where $a = b$ is a single character. A group $g = (R, \alpha)$ is a finite set of ranges $R$, matching any character in $\bigcup_{r \in R} r$, together with a repetition $\alpha \in \{1, +, *\}$: exactly one, at least one, or zero or more of those characters.
-
-A token is the triple
-
-$$
-T = (L, G, D)
-$$
-
-Where:
-
-- $L$ is a label, a unique name for the token.
-- $G = (g_1, \dots, g_n)$ is an **ordered** sequence of groups, the body of the token.
-- $D$ is a finite set of delimiter groups; $\alpha = *$ is not allowed here, since a token always needs a delimiter to end.
-
-so the input matches $T$ when it matches $g_1$ then $g_2$ up to $g_n$, followed by one delimiter $d \in D$.
-
-### The DFA
-
-All the tokens together compile to a single DFA, the 5-tuple
-
-$$
-M = (Q, \Sigma, \delta, q_0, F)
-$$
-
-Where:
-
-- $Q$ is a finite set of states.
-- $\Sigma$ is a finite set of input symbols, the entire allowed charset (7-bit ASCII).
-- $\delta$ is the transition function, also known as the **transition table**:
-
-$$
-\delta : Q \times \Sigma \rightarrow Q, \qquad \delta(q_1, s) = q_2
-$$
-
-- $q_0 \in Q$ is the start state, shared by every token.
-- $F \subseteq Q$ is the set of final (accepting) states, one per token.
-
-Each token adds its own states after $q_0$: one for every group with $\alpha = 1$ or $\alpha = +$ ($+$ also loops on itself), none for $\alpha = *$ (it loops on the state it starts from), and one final state reached through the delimiters. Any $(q, s)$ pair with no transition goes to the invalid state, which is a lexing error. Final states are stored as negative numbers, so checking whether a token was just accepted is a sign check, not a lookup.
-
-### Transition function in O(1)
-
-$\delta$ is stored as a flat 1-dimensional array, one row of 128 entries (one per ASCII character) for each state:
-
-$$
-\mathrm{max\_len} = |Q| \cdot 128
-$$
-
-$$
-\mathrm{idx}(q, s) = q \cdot 128 + s, \qquad 0 \leq \mathrm{idx} < \mathrm{max\_len}
-$$
-
-The array is first filled with the invalid state, then every token writes only its own valid transitions. All of this runs in `const fn`s driven by `table_init!`, which also works out $|Q|$ and the number of tokens from the definitions, so the size of the array is known at compile time and running a transition is just:
+The array is first filled with the invalid state, then every token writes only its own valid transitions. All of this runs in `const fn` compile time function, meaning the table is built-in in the final binary itself. Nothing
+is done at runtime except for a simple table lookup:
 
 ```rust
 table[state as usize * 128 + c as usize]
 ```
 
-No branches on the character class, no allocations: one character in, one array read, next state.
-
-## Limitations
-
-- Only ASCII input is supported (characters `0..=127`).
-- A single token can be at most 4096 characters long.
-- The end of the input must match a `'\0'` delimiter, see [Usage](#usage).
-
 ## Docs
 
-- [**API docs**](https://paoloanzn.github.io/yarlg/)
-
----
+- [**docs**](https://paoloanzn.github.io/yarlg/)
 
 ## License
 
