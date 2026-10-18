@@ -468,7 +468,7 @@ const INVALID_STATE: isize = -1;
 const START_STATE: State = 0;
 const TRANSITIONS_PER_STATE: u8 = 128;
 
-// Used compute the index of a given (State, char) key pair in the transition table.
+// Computes the index of a given (State, char) key pair in the transition table.
 #[doc(hidden)]
 const fn compute_index(state: State, char: u8) -> usize {
     let offset: usize = state as usize * TRANSITIONS_PER_STATE as usize;
@@ -478,7 +478,6 @@ const fn compute_index(state: State, char: u8) -> usize {
 // The table size is fixed and dependent from the amount of representable states
 // needed for the lexer DFA. Each state needs to have is corresponding transition 
 // function result for every possible ASCII character value, defined as `TRANSITIONS_PER_STATE`.
-#[doc(hidden)]
 pub const fn compute_table_size(number_of_states: usize) -> usize {
     return number_of_states as usize * TRANSITIONS_PER_STATE as usize;
 }
@@ -504,7 +503,7 @@ fn transition(state_in: State, char: u8, table: &[State]) -> State {
 /// Create it with [`table_init!`] and pass it to [`Lexer::run`].
 pub struct TransitionTable<'a, const N: usize, const M: usize> {
     /// The table is flat 1-dim array.
-    /// Each states gets its own computed offset from [`compute_index`].
+    /// Each states gets its own computed offset: (state * TRANSITIONS_PER_STATE).
     pub table: [State; N],
     pub terminal_states: [(State, &'a str); M],
 }
