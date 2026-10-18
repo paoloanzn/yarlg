@@ -2,7 +2,7 @@
 name = "yarlg"
 description = "A blazingly fast Lexer generator library."
 authors = ["Paolo Anzani <paoloanzn@gmail.com>"]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 repository = "https://github.com/paoloanzn/yarlg"
 readme = "README.md"
