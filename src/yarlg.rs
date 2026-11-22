@@ -15,6 +15,9 @@
 
 use std::fmt::{self};
 
+#[doc(hidden)]
+pub mod dsl;
+
 /// A contiguous range of Unicode scalars, or a single Unicode scalar.
 ///
 /// # Example
@@ -632,6 +635,8 @@ pub const fn max_token_transitions(tokens: &[Token]) -> usize {
 /// let tokens = yarlg::Lexer::run("42 foo", &LEXER);
 /// ```
 ///
+/// An optional visibility makes the table public: `table_init!(pub LEXER, TOKENS)`.
+///
 /// See [README](https://github.com/paoloanzn/yarlg/blob/master/README.md) for a complete lexer example.
 ///
 /// # Panics
@@ -640,8 +645,8 @@ pub const fn max_token_transitions(tokens: &[Token]) -> usize {
 #[macro_export]
 macro_rules! table_init {
     // @paoloanzn: this macro was written by claude after countless hours of pain.
-    ($name:ident, $tokens:expr, max_states = $max:expr $(,)?) => {
-        const $name: $crate::TransitionTable<
+    ($vis:vis $name:ident, $tokens:expr, max_states = $max:expr $(,)?) => {
+        $vis const $name: $crate::TransitionTable<
             'static,
             {
                 $crate::compute_table_size($crate::count_states::<
@@ -664,8 +669,8 @@ macro_rules! table_init {
             { $max },
         >($tokens);
     };
-    ($name:ident, $tokens:expr $(,)?) => {
-        $crate::table_init!($name, $tokens, max_states = $crate::MAX_STATES);
+    ($vis:vis $name:ident, $tokens:expr $(,)?) => {
+        $crate::table_init!($vis $name, $tokens, max_states = $crate::MAX_STATES);
     };
 }
 
