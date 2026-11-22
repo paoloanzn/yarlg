@@ -10,6 +10,8 @@ fn tok(label: &'static str, text: &str) -> (&'static str, String) {
 // NUMBER = {0...9}+
 // FLOAT  = {0...9}+,{.},{0...9}+
 // The DSL must lower to the exact same table as the hand-written tokens.
+// Both tokens are only followed by whitespace or the end of input: a digit
+// continues them and '.' continues NUMBER into FLOAT (and starts no token).
 lexer! {
     NUMBERS;
     DIGIT = '0'..='9';
@@ -30,7 +32,8 @@ fn same_table_as_hand_written_tokens() {
     const DELIMITERS: &[yarlg::CharacterGroup] =
         &[group!(SPACE TAB NEWLINE RETURN NULL, ExactlyOne)];
     const TOKENS: &[Token] = &[
-        Token::new("NUMBER", &[group!(DIGIT, AtLeastOne)], DELIMITERS),
+        Token::new("NUMBER", &[group!(DIGIT, AtLeastOne)], DELIMITERS)
+            .peek_delimiters(),
         Token::new(
             "FLOAT",
             &[
@@ -39,7 +42,8 @@ fn same_table_as_hand_written_tokens() {
                 group!(DIGIT, AtLeastOne),
             ],
             DELIMITERS,
-        ),
+        )
+        .peek_delimiters(),
     ];
     table_init!(HAND_WRITTEN, TOKENS);
 
@@ -50,7 +54,8 @@ fn same_table_as_hand_written_tokens() {
     );
 }
 
-// Default delimiters: tokens are separated by whitespace.
+// No delimiters written: every token ends where the next character can't
+// continue it, with or without whitespace.
 #[test]
 fn calculator() {
     lexer! {
@@ -62,20 +67,102 @@ fn calculator() {
         PLUS: '+';  MINUS: '-';  STAR: '*';  SLASH: '/';
         LPAREN: '(';  RPAREN: ')';
     }
+    let expected = Ok(vec![
+        tok("LPAREN", "("),
+        tok("NUMBER", "12"),
+        tok("PLUS", "+"),
+        tok("FLOAT", "3.5"),
+        tok("RPAREN", ")"),
+        tok("STAR", "*"),
+        tok("NUMBER", "2"),
+    ]);
+    assert_eq!(Lexer::run("( 12 + 3.5 ) * 2", &CALC), expected);
+    assert_eq!(Lexer::run("(12+3.5)*2", &CALC), expected);
     assert_eq!(
-        Lexer::run("( 12 + 3.5 ) * 2", &CALC),
+        Lexer::run("1--2", &CALC),
         Ok(vec![
-            tok("LPAREN", "("),
-            tok("NUMBER", "12"),
-            tok("PLUS", "+"),
-            tok("FLOAT", "3.5"),
-            tok("RPAREN", ")"),
-            tok("STAR", "*"),
+            tok("NUMBER", "1"),
+            tok("MINUS", "-"),
+            tok("MINUS", "-"),
             tok("NUMBER", "2"),
         ])
     );
-    // No maximal munch yet: tokens need a delimiter.
-    assert!(Lexer::run("(12+3.5)*2", &CALC).is_err());
+    // '.' starts no token: once NUMBER can't become a FLOAT, it's an error.
+    assert!(Lexer::run("1.2.3", &CALC).is_err());
+    assert!(Lexer::run("1 % 2", &CALC).is_err());
+}
+
+// The longest match wins: `==` is EQ, not two ASSIGN, and a keyword followed
+// by a letter or a digit is still an identifier.
+#[test]
+fn longest_match_without_whitespace() {
+    lexer! {
+        CODE;
+        LETTER = 'a'..='z';
+        DIGIT  = '0'..='9';
+
+        IDENT:  LETTER (LETTER | DIGIT)*;
+        LET:    "let";
+        INT:    DIGIT+;
+        ASSIGN: '=';
+        EQ:     "==";
+        SEMI:   ';';
+    }
+    assert_eq!(
+        Lexer::run("let x=1;", &CODE),
+        Ok(vec![
+            tok("LET", "let"),
+            tok("IDENT", "x"),
+            tok("ASSIGN", "="),
+            tok("INT", "1"),
+            tok("SEMI", ";"),
+        ])
+    );
+    assert_eq!(
+        Lexer::run("letter==let2", &CODE),
+        Ok(vec![
+            tok("IDENT", "letter"),
+            tok("EQ", "=="),
+            tok("IDENT", "let2"),
+        ])
+    );
+    assert_eq!(
+        Lexer::run("a===b", &CODE),
+        Ok(vec![
+            tok("IDENT", "a"),
+            tok("EQ", "=="),
+            tok("ASSIGN", "="),
+            tok("IDENT", "b"),
+        ])
+    );
+    // A digit continues IDENT, so `x1` is one token, while `1x` is two.
+    assert_eq!(
+        Lexer::run("x1 1x", &CODE),
+        Ok(vec![tok("IDENT", "x1"), tok("INT", "1"), tok("IDENT", "x")])
+    );
+}
+
+// Tokens with and without `@ delimited_by(...)` in the same lexer.
+#[test]
+fn written_and_automatic_delimiters_together() {
+    lexer! {
+        ASSIGNMENTS;
+        WORD = 'a'..='z';
+
+        KEY:   WORD+ @ delimited_by(':');
+        VALUE: WORD+;
+        COMMA: ',';
+    }
+    assert_eq!(
+        Lexer::run("a:b,c:d", &ASSIGNMENTS),
+        Ok(vec![
+            tok("KEY", "a"),
+            tok("VALUE", "b"),
+            tok("COMMA", ","),
+            tok("KEY", "c"),
+            tok("VALUE", "d"),
+        ])
+    );
 }
 
 // Keywords are declared after IDENT, so they win on the same input.
