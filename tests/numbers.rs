@@ -1,15 +1,15 @@
 use yarlg::{
-    AsciiCharacterRange as range, CharacterGroupType::*, Lexer, Token, group,
+    CharacterGroupType::*, CharacterRange as range, Lexer, Token, group,
     table_init,
 };
 
 // NUMBER = {0...9}+
 // FLOAT  = {0...9}+,{.},{0...9}+
 // Both share the `{0...9}+` prefix, the '.' decides which token it is.
-const DIGIT: range = range::new().with_start(b'0').with_end(b'9').build();
-const DOT: range = range::new().with_start(b'.').build();
-const SPACE: range = range::new().with_start(b' ').build();
-const NULL: range = range::new().with_start(b'\0').build();
+const DIGIT: range = range::new().with_start('0').with_end('9').build();
+const DOT: range = range::new().with_start('.').build();
+const SPACE: range = range::new().with_start(' ').build();
+const NULL: range = range::new().with_start('\0').build();
 
 const DELIMITERS: &[yarlg::CharacterGroup] =
     &[group!(SPACE, ExactlyOne), group!(NULL, ExactlyOne)];
@@ -75,4 +75,6 @@ fn rejects_incomplete_float() {
 fn rejects_undefined_characters() {
     assert!(lex("12a").is_err());
     assert!(lex("-1").is_err());
+    // U+0131 used to be truncated to ASCII '1'.
+    assert!(lex("ı").is_err());
 }

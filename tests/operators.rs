@@ -1,5 +1,5 @@
 use yarlg::{
-    AsciiCharacterRange as range, CharacterGroupType::*, Lexer, Token, group,
+    CharacterGroupType::*, CharacterRange as range, Lexer, Token, group,
     table_init,
 };
 
@@ -8,11 +8,11 @@ use yarlg::{
 // MINUS  = {-}
 // ARROW  = {-},{>}
 // Each two-char operator starts with a one-char operator.
-const EQUAL: range = range::new().with_start(b'=').build();
-const DASH: range = range::new().with_start(b'-').build();
-const GREATER: range = range::new().with_start(b'>').build();
-const SPACE: range = range::new().with_start(b' ').build();
-const NULL: range = range::new().with_start(b'\0').build();
+const EQUAL: range = range::new().with_start('=').build();
+const DASH: range = range::new().with_start('-').build();
+const GREATER: range = range::new().with_start('>').build();
+const SPACE: range = range::new().with_start(' ').build();
+const NULL: range = range::new().with_start('\0').build();
 
 const DELIMITERS: &[yarlg::CharacterGroup] =
     &[group!(SPACE, ExactlyOne), group!(NULL, ExactlyOne)];
@@ -78,4 +78,55 @@ fn rejects_operators_without_delimiter() {
 fn rejects_undefined_characters() {
     assert!(lex(">").is_err());
     assert!(lex("+").is_err());
+}
+
+#[test]
+fn multibyte_repetition_and_delimiters() {
+    const FACE: range = range::new().with_start('😀').with_end('😇').build();
+    const END: range = range::new().with_start('終').build();
+    const SEP: range = range::new().with_start('🛑').build();
+    const RULES: &[Token] = &[Token::new(
+        "END",
+        &[group!(FACE, ZeroOrMore), group!(END, ExactlyOne)],
+        &[group!(SEP NULL, ExactlyOne)],
+    )];
+    table_init!(UNICODE, RULES);
+    assert_eq!(
+        Lexer::run("終🛑😀😇終", &UNICODE),
+        Ok(vec![tok("END", "終"), tok("END", "😀😇終")])
+    );
+    assert!(Lexer::run("😀", &UNICODE).is_err());
+    assert!(Lexer::run("😈終", &UNICODE).is_err());
+}
+
+#[test]
+fn broad_scalar_range_fits_a_small_byte_dfa() {
+    // Cross all UTF-8 width boundaries and the surrogate gap, with partial
+    // byte blocks at both ends. The state budget rules out scalar expansion.
+    const BROAD: range =
+        range::new().with_start('~').with_end('\u{10abcd}').build();
+    const RULES: &[Token] = &[Token::new(
+        "SCALAR",
+        &[group!(BROAD, ExactlyOne)],
+        &[group!(NULL, ExactlyOne)],
+    )];
+    table_init!(UNICODE, RULES, max_states = 64);
+    for c in [
+        '~',
+        '\u{7f}',
+        '\u{80}',
+        '\u{7ff}',
+        '\u{800}',
+        '\u{d7ff}',
+        '\u{e000}',
+        '\u{ffff}',
+        '\u{10000}',
+        '\u{10abcd}',
+    ] {
+        let text = c.to_string();
+        assert_eq!(Lexer::run(&text, &UNICODE), Ok(vec![tok("SCALAR", &text)]));
+    }
+    for c in ['}', '\u{10abce}', char::MAX] {
+        assert!(Lexer::run(&c.to_string(), &UNICODE).is_err());
+    }
 }

@@ -10,9 +10,9 @@ To achieve this it does the following:
 
 - It turns Tokens defintions into a one single big DFA.
 - It turns it into a 1D array that lives pre-compiled in memory where every possible state transitions is already pre-compiled.
-- The resulting lexer process every character of the input string by doing a direct look up on that array.
+- The resulting lexer looks up each UTF-8 byte directly in that array.
 
-As a result yarlg turns every single character processing into an _O(1)_ operation and the complete input processing into an _O(n)_ operation where _n_ is the lenght of the input.
+Each byte transition takes _O(1)_ time, so lexing _n_ input bytes takes _O(n)_ time.
 
 ## Quickstart
 
@@ -35,7 +35,7 @@ EQ = "="
 
 ```rust
 use yarlg::{
-    AsciiCharacterRange as range, 
+    CharacterRange as range,
     CharacterGroupType, 
     Lexer, 
     Token, 
@@ -44,15 +44,15 @@ use yarlg::{
 };
 
 // Define all ranges we need.
-const DIGIT:    range = range::new().with_start('0' as u8).with_end('9' as u8).build();
-const DOT:      range = range::new().with_start('.' as u8).build();
-const PLUS:     range = range::new().with_start('+' as u8).build();
-const MINUS:    range = range::new().with_start('-' as u8).build();
-const SLASH:    range = range::new().with_start('/' as u8).build();
-const STAR:     range = range::new().with_start('*' as u8).build();
-const EQUAL:    range = range::new().with_start('=' as u8).build();
-const SPACE:    range = range::new().with_start(' ' as u8).build();
-const NULL:     range = range::new().with_start('\0' as u8).build();
+const DIGIT:    range = range::new().with_start('0').with_end('9').build();
+const DOT:      range = range::new().with_start('.').build();
+const PLUS:     range = range::new().with_start('+').build();
+const MINUS:    range = range::new().with_start('-').build();
+const SLASH:    range = range::new().with_start('/').build();
+const STAR:     range = range::new().with_start('*').build();
+const EQUAL:    range = range::new().with_start('=').build();
+const SPACE:    range = range::new().with_start(' ').build();
+const NULL:     range = range::new().with_start('\0').build();
 
 // Put together ranges into groups and groups into tokens.
 //
@@ -115,20 +115,14 @@ fn main() {
 > The end of the input is signalled with a trailing `'\0'`. Unless you know what you are doing always set 
 > `'\0'` as a delimiter for every token you define.
 
-### Know Limitations
+## Unicode rules and byte transitions
 
-- Only ASCII input is supported (characters `0..=127`).
+`CharacterRange` takes Rust `char` literals. For example, `range::new().with_start('α').with_end('ω').build()` matches an inclusive range of Unicode scalar values. Repetition and delimiters operate on whole scalars, not on individual bytes or grapheme clusters. Matching does not normalize the input: `'é'` and `"e\u{301}"` are different sequences.
 
-## Yarlg fast approach
-
-yarlg Lexer generation is based around a fixed _O(1)_ transition function. All the possible transtions
-for all possible states of the Lexer are stored as a flat 1-dimensional array, one row of 128 entries (one per ASCII character) for each state.
-
-The array is first filled with the invalid state, then every token writes only its own valid transitions. All of this runs in `const fn` compile time function, meaning the table is built-in in the final binary itself. Nothing
-is done at runtime except for a simple table lookup:
+At compile time, yarlg translates these ranges into UTF-8 byte patterns and combines them into a DFA. Each state has 256 entries, including invalid transitions. A multibyte character takes two to four transitions; the table does not need a column for every Unicode scalar. At runtime, each input byte requires one lookup:
 
 ```rust
-table[state as usize * 128 + c as usize]
+table[state as usize * 256 + byte as usize]
 ```
 
 ## Docs
