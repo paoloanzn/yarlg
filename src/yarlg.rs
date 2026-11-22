@@ -165,12 +165,15 @@ impl<'a> fmt::Display for CharacterGroup<'a> {
 /// A Token definition is two **ordered** lists of [`CharacterGroup`]s,
 /// one for the characters of the token and one for its delimiters.
 /// Plus a label to give the token a name.
+///
+/// By default the delimiter is consumed, see [`Token::peek_delimiters`] to keep it.
 pub struct Token<'a> {
     label: &'a str,
     groups: &'a [CharacterGroup<'a>],
     // TODO: evaluate if replacing [CharacterGroup] with one single group of ranges, CharacterGroup, is better.
     // The reason is that logically this will always be one single group.
     delimiters: &'a [CharacterGroup<'a>],
+    consume_delimiters: bool,
 }
 
 impl<'a> Token<'a> {
@@ -184,7 +187,46 @@ impl<'a> Token<'a> {
             label: label,
             groups: groups,
             delimiters: delimiters,
+            consume_delimiters: true,
         };
+    }
+
+    /// Keeps the delimiter in the input: it still ends the token, but it is
+    /// lexed again as the start of the next token instead of being consumed.
+    ///
+    /// This allows tokens without whitespace between them, e.g. `12+34`.
+    /// A peeked delimiter must be the start of some token (or whitespace).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use yarlg::{CharacterGroupType::*, CharacterRange as range, Lexer, Token, group, table_init};
+    ///
+    /// const DIGIT: range = range::new().with_start('0').with_end('9').build();
+    /// const PLUS: range = range::new().with_start('+').build();
+    /// const NULL: range = range::new().with_start('\0').build();
+    ///
+    /// const TOKENS: &[Token] = &[
+    ///     Token::new("NUMBER",
+    ///         &[group!(DIGIT, AtLeastOne)],
+    ///         &[group!(PLUS NULL, ExactlyOne)],
+    ///     ).peek_delimiters(),
+    ///     Token::new("PLUS",
+    ///         &[group!(PLUS, ExactlyOne)],
+    ///         &[group!(DIGIT, ExactlyOne)],
+    ///     ).peek_delimiters(),
+    /// ];
+    ///
+    /// table_init!(LEXER, TOKENS);
+    ///
+    /// assert_eq!(
+    ///     Lexer::run("12+34", &LEXER).unwrap(),
+    ///     vec![("NUMBER", "12".into()), ("PLUS", "+".into()), ("NUMBER", "34".into())]
+    /// );
+    /// ```
+    pub const fn peek_delimiters(mut self) -> Self {
+        self.consume_delimiters = false;
+        return self;
     }
     /// Builds all the possible transitions for the token.
     const fn build_transitions(
@@ -489,7 +531,8 @@ pub struct TransitionTable<'a, const N: usize, const M: usize> {
     /// The table is flat 1-dim array.
     /// Each states gets its own computed offset: (state * TRANSITIONS_PER_STATE).
     pub table: [State; N],
-    pub terminal_states: [(State, &'a str); M],
+    /// `(terminal state, label, consume delimiters)` for every token.
+    pub terminal_states: [(State, &'a str, bool); M],
 }
 
 // Number of transitions `Token::build_transitions` writes for `groups`.
@@ -555,8 +598,8 @@ pub const fn count_states<
         );
     }
     let mut scratch: [State; SIZE] = [INVALID_STATE; SIZE];
-    let mut scratch_terminal_states: [(State, &str); MAX] =
-        [(INVALID_STATE, ""); MAX];
+    let mut scratch_terminal_states: [(State, &str, bool); MAX] =
+        [(INVALID_STATE, "", true); MAX];
     return add_transitions_to_table::<T, MAX>(
         tokens,
         &mut scratch,
@@ -783,7 +826,7 @@ const fn write_range(
 const fn add_transitions_to_table<'a, const T: usize, const MAX: usize>(
     tokens: &'a [Token<'a>],
     table: &mut [State],
-    terminal_states: &mut [(State, &'a str)],
+    terminal_states: &mut [(State, &'a str, bool)],
 ) -> usize {
     let mut transition_buffer = [(0, ('\0', '\0'), 0); T];
     let mut merged: [(State, State, State); MAX] =
@@ -839,7 +882,11 @@ const fn add_transitions_to_table<'a, const T: usize, const MAX: usize>(
             );
             byte += 1;
         }
-        terminal_states[i] = (-(final_state as isize), token.label);
+        terminal_states[i] = (
+            -(final_state as isize),
+            token.label,
+            token.consume_delimiters,
+        );
         i += 1;
     }
     // Fill merged rows only after all original rows (including loops) are
@@ -883,7 +930,8 @@ pub const fn build_table<
         panic!("Error: `M` must be equal to the number of tokens.");
     }
     let mut table: [State; N] = [INVALID_STATE; N];
-    let mut terminal_states: [(State, &'a str); M] = [(INVALID_STATE, ""); M];
+    let mut terminal_states: [(State, &'a str, bool); M] =
+        [(INVALID_STATE, "", true); M];
     add_transitions_to_table::<T, MAX>(
         tokens,
         &mut table,
@@ -944,10 +992,15 @@ impl Lexer {
         let mut scalar_start = 0;
         let mut tokens_found: Vec<(&'a str, String)> = vec![];
         let mut state: State = START_STATE;
+        let bytes = input.as_bytes();
+        let mut offset = 0;
         // IMPORTANT: A trailing '\0' terminates the last token, so it must be a delimiter of every token.
-        for (offset, byte) in
-            input.bytes().chain(std::iter::once(0)).enumerate()
-        {
+        while offset <= bytes.len() {
+            let byte = if offset < bytes.len() {
+                bytes[offset]
+            } else {
+                0
+            };
             if byte == 0 && state == START_STATE {
                 break;
             }
@@ -965,12 +1018,12 @@ impl Lexer {
                     ));
                 }
                 _ if state < -1 => {
-                    let label = match table
+                    let (label, consume) = match table
                         .terminal_states
                         .iter()
-                        .find(|(terminal_state, _)| *terminal_state == state)
+                        .find(|(terminal_state, _, _)| *terminal_state == state)
                     {
-                        Some((_, label)) => *label,
+                        Some((_, label, consume)) => (*label, *consume),
                         None => {
                             return Err(format!(
                                 "Error: no token label found for terminal state `{}`",
@@ -983,6 +1036,14 @@ impl Lexer {
                         input[token_start..scalar_start].to_owned(),
                     ));
                     state = START_STATE;
+                    // A peeked delimiter is lexed again from its first byte.
+                    // An empty token always consumes it, otherwise the same
+                    // delimiter would end the same empty token forever.
+                    if !consume && scalar_start > token_start {
+                        token_start = scalar_start;
+                        offset = scalar_start;
+                        continue;
+                    }
                     token_start = offset + 1;
                 }
                 START_STATE => token_start = offset + 1,
@@ -993,6 +1054,7 @@ impl Lexer {
                 }
                 _ => {}
             }
+            offset += 1;
         }
         return Ok(tokens_found);
     }
