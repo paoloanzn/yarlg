@@ -39,6 +39,10 @@ use crate::{CharacterGroup, CharacterGroupType, CharacterRange, Token};
 /// + A token without `@ delimited_by(...)` ends by itself, as soon as the next
 ///   character can't continue it (nor any other token that matches the same
 ///   input). That character is not consumed: `12+34` is `12`, `+`, `34`.
+///   What may continue can depend on what was read: next to `HEX: "0x" DIGIT+`,
+///   `0x1` is `HEX` but `10x` is `NUMBER`, `x`. This is looked at for the first
+///   4 characters of a token, after that it ends only on the characters that
+///   would end it whatever came before.
 /// + A token with `@ delimited_by(class)` ends only before one of those
 ///   characters, which is consumed and is not part of the token text.
 /// + When two tokens match the same input the **last declared** one wins.
@@ -94,9 +98,7 @@ use crate::{CharacterGroup, CharacterGroupType, CharacterRange, Token};
 /// A token without `@ delimited_by(...)` also fails it when:
 ///
 /// + it can match an empty input;
-/// + every character after it continues some token, so it would never end;
-/// + where it ends depends on what comes before it, e.g. `A: 'a'+;` next to
-///   `AB: "ab";` (`b` continues `ab` but ends `aa`).
+/// + every character after it continues some token, so it would never end.
 ///
 /// Give those tokens `@ delimited_by(...)`.
 ///
@@ -146,7 +148,7 @@ macro_rules! __lexer {
             &$crate::dsl::plan_ranges::<{ __PLAN.ranges_len() }>(&__PLAN)
         };
         const __GROUPS: &[$crate::CharacterGroup<'static>] = const {
-            &$crate::dsl::plan_groups::<{ __PLAN.groups_len() }>(&__PLAN, __RAW)
+            &$crate::dsl::plan_groups::<{ __PLAN.groups_len() }>(&__PLAN, __RAW, __RANGES)
         };
         const __DELIMITERS: &[$crate::CharacterGroup<'static>] = const {
             &$crate::dsl::plan_delimiters::<{ __PLAN.tokens_len() }>(&__PLAN, __RANGES)
@@ -591,7 +593,9 @@ pub const fn tokens<const N: usize>(
 // + `Context`: the positions of every token at once.
 // + `explore` / `follow_from`: the follow sets of a token in every context
 //   where it is complete.
-// + `Plan`: the final tokens, turned into real `Token`s by the `plan_*` functions.
+// + `Plan`: the final tokens, described with indexes.
+// + `split`: one copy of a token per follow set, when it depends on what was read.
+// + `plan_*`: the plan turned into real `Token`s.
 
 // Checks if `token` was written without `@ delimited_by(...)`, so its delimiters
 // must be computed. The DSL marks it with no delimiters and the peek flag,
@@ -623,7 +627,10 @@ impl CharSet {
         len: 0,
     };
 
-    // Returns the characters matched by `group`.
+    // Returns the characters matched by `group`. Surrogates (`0xD800..=0xDFFF`) are
+    // not characters, so they are left out even when a range spans them
+    // (`' '..='\u{10FFFF}'`). Every other set is built from these, so no set
+    // ever contains a surrogate.
     const fn of_group(group: &CharacterGroup) -> Self {
         let mut set = Self::EMPTY;
         let mut i = 0;
@@ -637,7 +644,7 @@ impl CharSet {
             };
             i += 1;
         }
-        return set;
+        return set.minus(Self::EMPTY.with(0xd800, 0xdfff));
     }
 
     const fn is_empty(&self) -> bool {
@@ -1236,6 +1243,11 @@ const PLAN_TOKENS: usize = 256;
 enum PlanGroup {
     // Group `group` of the written token, as it is.
     Written { group: usize },
+    // Group `group` of the written token after it matched once: it may match
+    // more characters, but doesn't have to (`*`).
+    Repeat { group: usize },
+    // Exactly one character of `Plan::ranges[start..end]`: an atom read by `split`.
+    Atom { start: usize, end: usize },
 }
 
 // A planned token.
@@ -1265,7 +1277,8 @@ pub struct Plan {
 
 impl Plan {
     /// Plans the final tokens: a token with `@ delimited_by(...)` is kept as
-    /// written, the others get their follow set as peeked delimiters.
+    /// written, the others become one or more copies (see `split`), each with
+    /// its follow set as peeked delimiters.
     pub const fn new(tokens: &[Token]) -> Self {
         check_tokens(tokens);
         let first = first_chars(tokens);
@@ -1284,16 +1297,16 @@ impl Plan {
         let mut t = 0;
         while t < tokens.len() {
             if is_automatic(&tokens[t]) {
-                let follow =
-                    follow_from(tokens, first, t, Context::start(tokens));
-                if !follow.same_everywhere {
-                    panic!(
-                        "Error: where a token ends depends on what comes before it, give it `@ delimited_by(...)`."
-                    );
-                }
-                plan.add_token(tokens, t, Some(follow.chars));
+                split(
+                    &mut plan,
+                    tokens,
+                    first,
+                    t,
+                    Context::start(tokens),
+                    Prefix::EMPTY,
+                );
             } else {
-                plan.add_token(tokens, t, None);
+                plan.add_written(tokens, t);
             }
             t += 1;
         }
@@ -1315,37 +1328,73 @@ impl Plan {
         return self.tokens_len;
     }
 
-    // Adds token `t` with its written groups, and `follow` as its peeked
-    // delimiters (`None` keeps its written delimiters).
-    const fn add_token(
-        &mut self,
-        tokens: &[Token],
-        t: usize,
-        follow: Option<CharSet>,
-    ) {
+    // Adds token `t` as written, delimiters included.
+    const fn add_written(&mut self, tokens: &[Token], t: usize) {
         let start = self.groups_len;
         let mut group = 0;
         while group < tokens[t].groups.len() {
             self.add_group(PlanGroup::Written { group: group });
             group += 1;
         }
-        let delimiters = match follow {
-            Some(chars) => {
-                if chars.is_empty() {
-                    panic!(
-                        "Error: a token never ends, every character after it continues a token. Give it `@ delimited_by(...)`."
-                    );
-                }
-                Some(self.add_ranges(chars))
+        self.add_token(t, (start, self.groups_len), None);
+    }
+
+    // Adds a copy of token `t` that peeks `follow`. Its groups are the atoms
+    // of `prefix`, one character each, then the rest of the written pattern
+    // from `position` (`None` for nothing more).
+    const fn add_copy(
+        &mut self,
+        tokens: &[Token],
+        t: usize,
+        prefix: Prefix,
+        position: Option<usize>,
+        follow: CharSet,
+    ) {
+        let start = self.groups_len;
+        let mut i = 0;
+        while i < prefix.len {
+            let (atom_start, atom_end) = prefix.atoms[i];
+            self.add_group(PlanGroup::Atom {
+                start: atom_start,
+                end: atom_end,
+            });
+            i += 1;
+        }
+        if let Some(position) = position {
+            let groups = tokens[t].groups;
+            // The group that matched the last character may match more.
+            if position > 0 && can_repeat(&groups[position - 1]) {
+                self.add_group(PlanGroup::Repeat {
+                    group: position - 1,
+                });
             }
-            None => None,
-        };
+            let mut group = position;
+            while group < groups.len() {
+                self.add_group(PlanGroup::Written { group: group });
+                group += 1;
+            }
+        }
+        if follow.is_empty() {
+            panic!(
+                "Error: a token never ends, every character after it continues a token. Give it `@ delimited_by(...)`."
+            );
+        }
+        let delimiters = self.add_ranges(follow);
+        self.add_token(t, (start, self.groups_len), Some(delimiters));
+    }
+
+    const fn add_token(
+        &mut self,
+        t: usize,
+        groups: (usize, usize),
+        delimiters: Option<(usize, usize)>,
+    ) {
         if self.tokens_len == PLAN_TOKENS {
             panic!("Error: too many tokens to compute automatic delimiters.");
         }
         self.tokens[self.tokens_len] = PlanToken {
             token: t,
-            groups: (start, self.groups_len),
+            groups: groups,
             delimiters: delimiters,
         };
         self.tokens_len += 1;
@@ -1359,30 +1408,21 @@ impl Plan {
         self.groups_len += 1;
     }
 
-    // Adds the ranges of `chars`, returns where they are. Surrogates
-    // (`0xD800..=0xDFFF`) are not characters, so ranges skip them.
+    // Adds the ranges of `chars`, returns where they are.
     const fn add_ranges(&mut self, chars: CharSet) -> (usize, usize) {
         let start = self.ranges_len;
         let mut i = 0;
         while i < chars.len {
-            let (low, high) = chars.ranges[i];
-            if low <= 0xd7ff {
-                self.add_range(low, min(high, 0xd7ff));
+            if self.ranges_len == PLAN_RANGES {
+                panic!(
+                    "Error: too many ranges to compute automatic delimiters."
+                );
             }
-            if high >= 0xe000 {
-                self.add_range(max(low, 0xe000), high);
-            }
+            self.ranges[self.ranges_len] = chars.ranges[i];
+            self.ranges_len += 1;
             i += 1;
         }
         return (start, self.ranges_len);
-    }
-
-    const fn add_range(&mut self, low: u32, high: u32) {
-        if self.ranges_len == PLAN_RANGES {
-            panic!("Error: too many ranges to compute automatic delimiters.");
-        }
-        self.ranges[self.ranges_len] = (low, high);
-        self.ranges_len += 1;
     }
 }
 
@@ -1402,6 +1442,101 @@ const fn check_tokens(tokens: &[Token]) {
             );
         }
         t += 1;
+    }
+}
+
+// Splitting.
+//
+// A token has one set of delimiters, but its follow set can depend on what
+// was read. With `A: 'a'+` next to `AB: "ab"` and `B: 'b'`:
+//
+// + after `a`, `AB` still matches, so `b` must continue it (`ab` is `AB`);
+// + after `aa`, `AB` doesn't, so `b` must end `A` (`aab` is `A`, `B`).
+//
+// So the token becomes several copies with the same label, each one with its
+// own delimiters. `split` reads the token one atom at a time, until its follow
+// set stops changing:
+//
+//     A: 'a'+   becomes   A: 'a'           ends before whitespace or eof
+//                         A: 'a' 'a' 'a'*  ends before 'b', whitespace or eof
+//
+// The engine merges the copies (they share their prefixes) and they have the
+// same label, so the output is the one of a single, smarter token.
+
+// How many characters `split` reads at most. If the follow set still changes
+// after that, the copy uses the characters that end the token in every
+// context: always safe (see `Follow::chars`), but an input that should end
+// the token on another character is reported as an error.
+const MAX_SPLIT_DEPTH: usize = 4;
+
+// The atoms read so far by `split`, each one stored in `Plan::ranges`.
+#[derive(Clone, Copy)]
+struct Prefix {
+    atoms: [(usize, usize); MAX_SPLIT_DEPTH],
+    len: usize,
+}
+
+impl Prefix {
+    const EMPTY: Self = Self {
+        atoms: [(0, 0); MAX_SPLIT_DEPTH],
+        len: 0,
+    };
+
+    // Returns the prefix followed by one more atom.
+    const fn and(self, atom: (usize, usize)) -> Self {
+        let mut prefix = self;
+        prefix.atoms[prefix.len] = atom;
+        prefix.len += 1;
+        return prefix;
+    }
+}
+
+// Plans the copies of token `t` for every input that starts with `prefix`,
+// the input that left the tokens in `context`.
+const fn split(
+    plan: &mut Plan,
+    tokens: &[Token],
+    first: CharSet,
+    t: usize,
+    context: Context,
+    prefix: Prefix,
+) {
+    let follow = follow_from(tokens, first, t, context);
+
+    // The follow set doesn't change anymore (or we stop looking): one copy
+    // for the rest of the pattern. The token may be at several positions,
+    // and each one continues differently, so it's one copy per position.
+    if follow.same_everywhere || prefix.len == MAX_SPLIT_DEPTH {
+        let mut position = 0;
+        while position <= tokens[t].groups.len() {
+            if has(context.positions[t], position) {
+                plan.add_copy(tokens, t, prefix, Some(position), follow.chars);
+            }
+            position += 1;
+        }
+        return;
+    }
+
+    // It still changes. If the token is complete here, the input read so far
+    // gets its own copy, with the follow set of this context.
+    if context.is_complete(tokens, t) {
+        plan.add_copy(tokens, t, prefix, None, context.follow(tokens, first));
+    }
+    // Then read one more atom and look again.
+    let atoms = Atoms::of(tokens, t, &context);
+    let mut a = 0;
+    while a < atoms.len {
+        let atom = atoms.sets[a];
+        let stored = plan.add_ranges(atom);
+        split(
+            plan,
+            tokens,
+            first,
+            t,
+            context.read(tokens, atom.first()),
+            prefix.and(stored),
+        );
+        a += 1;
     }
 }
 
@@ -1443,6 +1578,7 @@ pub const fn plan_ranges<const N: usize>(plan: &Plan) -> [CharacterRange; N] {
 pub const fn plan_groups<const N: usize>(
     plan: &Plan,
     tokens: &'static [Token<'static>],
+    ranges: &'static [CharacterRange],
 ) -> [CharacterGroup<'static>; N] {
     let mut out = [const {
         CharacterGroup {
@@ -1460,6 +1596,14 @@ pub const fn plan_groups<const N: usize>(
                 PlanGroup::Written { group } => {
                     copy_group(&token.groups[group])
                 }
+                PlanGroup::Repeat { group } => CharacterGroup {
+                    ranges: token.groups[group].ranges,
+                    group_type: CharacterGroupType::ZeroOrMore,
+                },
+                PlanGroup::Atom { start, end } => CharacterGroup {
+                    ranges: slice(ranges, (start, end)),
+                    group_type: CharacterGroupType::ExactlyOne,
+                },
             };
             i += 1;
         }

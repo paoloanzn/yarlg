@@ -375,3 +375,60 @@ fn long_rules() {
         ])
     );
 }
+
+// After `a`, AB may still match, so 'b' continues it. After `aa` it can't, so
+// 'b' ends A instead. A is split into copies that end on different characters.
+#[test]
+fn where_a_token_ends_depends_on_what_came_before() {
+    lexer! {
+        LETTERS;
+        A:  'a'+;
+        AB: "ab";
+        B:  'b';
+    }
+    assert_eq!(Lexer::run("ab", &LETTERS), Ok(vec![tok("AB", "ab")]));
+    assert_eq!(
+        Lexer::run("aab", &LETTERS),
+        Ok(vec![tok("A", "aa"), tok("B", "b")])
+    );
+    assert_eq!(
+        Lexer::run("aaaab b a", &LETTERS),
+        Ok(vec![
+            tok("A", "aaaa"),
+            tok("B", "b"),
+            tok("B", "b"),
+            tok("A", "a"),
+        ])
+    );
+}
+
+// `0` may start HEX, so 'x' continues it, while `10x` is NUMBER then IDENT.
+#[test]
+fn number_next_to_hex() {
+    lexer! {
+        NUMBERS_AND_HEX;
+        DIGIT  = '0'..='9';
+        LETTER = 'a'..='z';
+
+        NUMBER: DIGIT+;
+        HEX:    "0x" DIGIT+;
+        IDENT:  LETTER+;
+    }
+    assert_eq!(
+        Lexer::run("0x12 0 10x", &NUMBERS_AND_HEX),
+        Ok(vec![
+            tok("HEX", "0x12"),
+            tok("NUMBER", "0"),
+            tok("NUMBER", "10"),
+            tok("IDENT", "x"),
+        ])
+    );
+    assert_eq!(
+        Lexer::run("00x1", &NUMBERS_AND_HEX),
+        Ok(vec![
+            tok("NUMBER", "00"),
+            tok("IDENT", "x"),
+            tok("NUMBER", "1")
+        ])
+    );
+}
