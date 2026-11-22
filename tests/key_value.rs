@@ -1,17 +1,17 @@
 use yarlg::{
-    AsciiCharacterRange as range, CharacterGroupType::*, Lexer, Token, group,
+    CharacterGroupType::*, CharacterRange as range, Lexer, Token, group,
     table_init,
 };
 
 // KEY   = {a...z, 0...9, _}+ delimited by '='
 // VALUE = {a...z, 0...9, _}+ delimited by '\n' or end of input
 // Both tokens have the same groups: only the delimiter decides the label.
-const LOWER: range = range::new().with_start(b'a').with_end(b'z').build();
-const DIGIT: range = range::new().with_start(b'0').with_end(b'9').build();
-const UNDERSCORE: range = range::new().with_start(b'_').build();
-const EQUAL: range = range::new().with_start(b'=').build();
-const NEWLINE: range = range::new().with_start(b'\n').build();
-const NULL: range = range::new().with_start(b'\0').build();
+const LOWER: range = range::new().with_start('a').with_end('z').build();
+const DIGIT: range = range::new().with_start('0').with_end('9').build();
+const UNDERSCORE: range = range::new().with_start('_').build();
+const EQUAL: range = range::new().with_start('=').build();
+const NEWLINE: range = range::new().with_start('\n').build();
+const NULL: range = range::new().with_start('\0').build();
 
 const TOKENS: &[Token] = &[
     Token::new(

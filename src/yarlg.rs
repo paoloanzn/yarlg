@@ -8,38 +8,36 @@
 //!
 //! + It turns Tokens defintions into a one single big [DFA](https://en.wikipedia.org/wiki/Deterministic_finite_automaton).
 //! + It turns it into a 1D array that lives pre-compiled in memory where every possible state transitions is already pre-compiled.
-//! + The resulting lexer process every character of the input string by doing a direct look up on that array.
-//!
-//! As a result `yarlg` turns every single character processing into an O(1) operation and the complete input processing
-//! into an O(n) operation where n is the lenght of the input.
+//! + Character ranges are compiled into UTF-8 byte transitions. The lexer makes
+//!   one O(1) lookup per byte, taking O(n) time for n bytes of input.
 //!
 //! See the [README](https://github.com/paoloanzn/yarlg/blob/master/README.md) for additional documentation and examples.
 
 use std::fmt::{self};
 
-/// A contiguous range of ASCII characters, or a single ASCII character.
+/// A contiguous range of Unicode scalars, or a single Unicode scalar.
 ///
 /// # Example
 ///
 /// ```
-/// use yarlg::AsciiCharacterRange as range;
+/// use yarlg::CharacterRange as range;
 ///
 /// // '0'...'9'
-/// const DIGIT: range = range::new().with_start('0' as u8).with_end('9' as u8).build();
+/// const DIGIT: range = range::new().with_start('0').with_end('9').build();
 /// // ' '
-/// const SPACE: range = range ::new().with_start(' ' as u8).build();
+/// const SPACE: range = range ::new().with_start(' ').build();
 ///
 /// assert_eq!(DIGIT.to_string(), "'0'...'9'");
 /// assert_eq!(SPACE.to_string(), "' '");
 /// ```
 #[derive(Default)]
-pub struct AsciiCharacterRange {
-    start: Option<u8>,
-    end: Option<u8>,
+pub struct CharacterRange {
+    start: Option<char>,
+    end: Option<char>,
 }
 
 /// A range can contain one, two or zero elements.
-impl AsciiCharacterRange {
+impl CharacterRange {
     /// Creates an empty range with neither `start` nor `end` set.
     pub const fn new() -> Self {
         return Self {
@@ -51,29 +49,19 @@ impl AsciiCharacterRange {
     /// Sets the first character of the range (inclusive).
     ///
     /// If no `end` is set, the range matches only this character.
-    pub const fn with_start(mut self, start: u8) -> Self {
+    pub const fn with_start(mut self, start: char) -> Self {
         self.start = Some(start);
         self
     }
 
     /// Sets the last character of the range (inclusive).
-    pub const fn with_end(mut self, end: u8) -> Self {
+    pub const fn with_end(mut self, end: char) -> Self {
         self.end = Some(end);
         self
     }
 
     /// Validates and returns the range.
     pub const fn build(self) -> Self {
-        if let Some(start) = self.start {
-            if start >= TRANSITIONS_PER_STATE {
-                panic!("Error: `start` is over the max allowed value (127)");
-            }
-        }
-        if let Some(end) = self.end {
-            if end >= TRANSITIONS_PER_STATE {
-                panic!("Error: `end` is over the max allowed value (127)");
-            }
-        }
         if let (Some(start), Some(end)) = (self.start, self.end) {
             if start > end {
                 panic!("Error: `start` can't be greater than `end`");
@@ -83,17 +71,17 @@ impl AsciiCharacterRange {
     }
 }
 
-impl fmt::Display for AsciiCharacterRange {
+impl fmt::Display for CharacterRange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match (self.start, self.end) {
             (Some(start), Some(end)) => {
-                write!(f, "'{0}'...'{1}'", start as char, end as char)
+                write!(f, "'{0}'...'{1}'", start, end)
             }
             (Some(start), None) => {
-                write!(f, "'{0}'", start as char)
+                write!(f, "'{0}'", start)
             }
             (None, Some(end)) => {
-                write!(f, "'{0}'", end as char)
+                write!(f, "'{0}'", end)
             }
             (None, None) => {
                 write!(f, "<empty_range>")
@@ -111,26 +99,26 @@ pub enum CharacterGroupType {
     ZeroOrMore,
 }
 
-/// A set of ASCII character ranges with an associated group type.
+/// A set of Unicode scalar ranges with an associated group type.
 /// `{'0'...'9', 'a'...'z', 'A'...'Z'}+`.
 ///
 /// # Example
 ///
 /// ```
-/// use yarlg::{AsciiCharacterRange as range, CharacterGroupType, group};
+/// use yarlg::{CharacterRange as range, CharacterGroupType, group};
 ///
-/// const LOWER: range = range::new().with_start('a' as u8).with_end('z' as u8).build();
-/// const UNDERSCORE: range = range::new().with_start(b'_').build();
+/// const LOWER: range = range::new().with_start('a').with_end('z').build();
+/// const UNDERSCORE: range = range::new().with_start('_').build();
 ///
 /// let word = group!(LOWER UNDERSCORE, CharacterGroupType::AtLeastOne);
 /// assert_eq!(word.to_string(), "{'a'...'z', '_'}+");
 /// ```
 pub struct CharacterGroup<'a> {
-    pub ranges: &'a [AsciiCharacterRange],
+    pub ranges: &'a [CharacterRange],
     pub group_type: CharacterGroupType,
 }
 
-/// Creates a [`CharacterGroup`] from one or more [`AsciiCharacterRange`]s
+/// Creates a [`CharacterGroup`] from one or more [`CharacterRange`]s
 /// and a [`CharacterGroupType`].
 #[macro_export]
 macro_rules! group {
@@ -201,19 +189,15 @@ impl<'a> Token<'a> {
     /// Builds all the possible transitions for the token.
     const fn build_transitions(
         &self,
-        buf: &mut [(State, char, State)],
+        buf: &mut [(State, (char, char), State)],
     ) -> (usize, usize) {
         macro_rules! expand_range {
             ($start:expr, $end:expr, $arr:expr, $offset:expr, $state_start:expr, $state_end:expr) => {{
-                let mut value: u8 = $start as u8;
-                while value <= $end as u8 {
-                    $arr[$offset] = ($state_start, value as char, $state_end);
-                    $offset += 1;
-                    value += 1;
-                }
+                $arr[$offset] = ($state_start, ($start, $end), $state_end);
+                $offset += 1;
             }};
             ($char:expr, $arr:expr, $offset:expr, $state_start:expr, $state_end:expr) => {{
-                $arr[$offset] = ($state_start, $char, $state_end);
+                $arr[$offset] = ($state_start, ($char, $char), $state_end);
                 $offset += 1;
             }};
         }
@@ -229,8 +213,8 @@ impl<'a> Token<'a> {
                     (Some(start), Some(end)) => match group.group_type {
                         CharacterGroupType::ExactlyOne => {
                             expand_range!(
-                                start as char,
-                                end as char,
+                                start,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -239,16 +223,16 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::AtLeastOne => {
                             expand_range!(
-                                start as char,
-                                end as char,
+                                start,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
                                 num_states + 1
                             );
                             expand_range!(
-                                start as char,
-                                end as char,
+                                start,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states + 1,
@@ -257,8 +241,8 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::ZeroOrMore => {
                             expand_range!(
-                                start as char,
-                                end as char,
+                                start,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -269,7 +253,7 @@ impl<'a> Token<'a> {
                     (Some(start), None) => match group.group_type {
                         CharacterGroupType::ExactlyOne => {
                             expand_range!(
-                                start as char,
+                                start,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -278,14 +262,14 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::AtLeastOne => {
                             expand_range!(
-                                start as char,
+                                start,
                                 buf,
                                 num_transitions,
                                 num_states,
                                 num_states + 1
                             );
                             expand_range!(
-                                start as char,
+                                start,
                                 buf,
                                 num_transitions,
                                 num_states + 1,
@@ -294,7 +278,7 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::ZeroOrMore => {
                             expand_range!(
-                                start as char,
+                                start,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -305,7 +289,7 @@ impl<'a> Token<'a> {
                     (None, Some(end)) => match group.group_type {
                         CharacterGroupType::ExactlyOne => {
                             expand_range!(
-                                end as char,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -314,14 +298,14 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::AtLeastOne => {
                             expand_range!(
-                                end as char,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
                                 num_states + 1
                             );
                             expand_range!(
-                                end as char,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states + 1,
@@ -330,7 +314,7 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::ZeroOrMore => {
                             expand_range!(
-                                end as char,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -368,8 +352,8 @@ impl<'a> Token<'a> {
                     (Some(start), Some(end)) => match delimiter.group_type {
                         CharacterGroupType::ExactlyOne => {
                             expand_range!(
-                                start as char,
-                                end as char,
+                                start,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -378,16 +362,16 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::AtLeastOne => {
                             expand_range!(
-                                start as char,
-                                end as char,
+                                start,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
                                 terminal_state
                             );
                             expand_range!(
-                                start as char,
-                                end as char,
+                                start,
+                                end,
                                 buf,
                                 num_transitions,
                                 final_state,
@@ -399,7 +383,7 @@ impl<'a> Token<'a> {
                     (Some(start), None) => match delimiter.group_type {
                         CharacterGroupType::ExactlyOne => {
                             expand_range!(
-                                start as char,
+                                start,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -408,14 +392,14 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::AtLeastOne => {
                             expand_range!(
-                                start as char,
+                                start,
                                 buf,
                                 num_transitions,
                                 num_states,
                                 terminal_state
                             );
                             expand_range!(
-                                start as char,
+                                start,
                                 buf,
                                 num_transitions,
                                 final_state,
@@ -427,7 +411,7 @@ impl<'a> Token<'a> {
                     (None, Some(end)) => match delimiter.group_type {
                         CharacterGroupType::ExactlyOne => {
                             expand_range!(
-                                end as char,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
@@ -436,14 +420,14 @@ impl<'a> Token<'a> {
                         }
                         CharacterGroupType::AtLeastOne => {
                             expand_range!(
-                                end as char,
+                                end,
                                 buf,
                                 num_transitions,
                                 num_states,
                                 terminal_state
                             );
                             expand_range!(
-                                end as char,
+                                end,
                                 buf,
                                 num_transitions,
                                 final_state,
@@ -466,7 +450,7 @@ impl<'a> Token<'a> {
 pub type State = isize;
 const INVALID_STATE: isize = -1;
 const START_STATE: State = 0;
-const TRANSITIONS_PER_STATE: u8 = 128;
+const TRANSITIONS_PER_STATE: usize = 256;
 
 // Computes the index of a given (State, char) key pair in the transition table.
 #[doc(hidden)]
@@ -477,7 +461,7 @@ const fn compute_index(state: State, char: u8) -> usize {
 
 // The table size is fixed and dependent from the amount of representable states
 // needed for the lexer DFA. Each state needs to have is corresponding transition
-// function result for every possible ASCII character value, defined as `TRANSITIONS_PER_STATE`.
+// function result for every possible UTF-8 byte value, defined as `TRANSITIONS_PER_STATE`.
 pub const fn compute_table_size(number_of_states: usize) -> usize {
     return number_of_states as usize * TRANSITIONS_PER_STATE as usize;
 }
@@ -519,7 +503,7 @@ const fn groups_transitions(groups: &[CharacterGroup]) -> usize {
         while j < group.ranges.len() {
             let range = &group.ranges[j];
             let range_len: usize = match (range.start, range.end) {
-                (Some(start), Some(end)) => (end - start) as usize + 1,
+                (Some(_), Some(_)) => 1,
                 (Some(_), None) | (None, Some(_)) => 1,
                 (None, None) => 0,
             };
@@ -643,7 +627,7 @@ macro_rules! table_init {
 }
 
 // Merges the `old` and `new` states into one single state that has the transitions of both.
-// If both `old` and `new` are terminal states, `new` wins, this means that
+// Terminal states are allocated in token order: the more negative one wins, so
 // `yarlg` use a "last-declared-wins" approach for conflicting tokens.
 //
 // So the token definition order inside `const TOKENS: &[Token] = &[...];` before
@@ -663,7 +647,33 @@ const fn merge(
         return new;
     }
     if old < 0 || new < 0 {
-        return if new < 0 { new } else { old };
+        return if new < old { new } else { old };
+    }
+    // Store unions as ordered pairs (smallest original state, remainder).
+    // Thus overlapping loops reuse the same row, e.g. (A+B)+B == A+B.
+    let mut a = (old, INVALID_STATE);
+    let mut b = (new, INVALID_STATE);
+    let mut i = 0;
+    while i < *num_merged {
+        let (head, tail, state) = merged[i];
+        if old == state {
+            a = (head, tail);
+        }
+        if new == state {
+            b = (head, tail);
+        }
+        i += 1;
+    }
+    let (old, left, right) = if a.0 == b.0 {
+        (a.0, a.1, b.1)
+    } else if a.0 < b.0 {
+        (a.0, a.1, new)
+    } else {
+        (b.0, old, b.1)
+    };
+    let new = merge(table, left, right, total_states, merged, num_merged);
+    if new == INVALID_STATE {
+        return old;
     }
     let mut i: usize = 0;
     while i < *num_merged {
@@ -677,15 +687,94 @@ const fn merge(
     check_table_space(table, *total_states);
     merged[*num_merged] = (old, new, state);
     *num_merged += 1;
-    let mut c: u8 = 0;
-    while c < TRANSITIONS_PER_STATE {
-        let old_end = table[compute_index(old, c)];
-        let new_end = table[compute_index(new, c)];
-        table[compute_index(state, c)] =
-            merge(table, old_end, new_end, total_states, merged, num_merged);
-        c += 1;
-    }
     return state;
+}
+
+// Write an inclusive scalar range as compact UTF-8 paths into the byte table.
+const fn write_range(
+    table: &mut [State],
+    from: State,
+    (first, last): (char, char),
+    to: State,
+    total_states: &mut usize,
+    merged: &mut [(State, State, State)],
+    num_merged: &mut usize,
+) {
+    let mut lo = first as u32;
+    while lo <= last as u32 {
+        // Never cross a UTF-8 length boundary or encode a surrogate.
+        let limit = match lo {
+            0..=0x7f => 0x80,
+            0x80..=0x7ff => 0x800,
+            0x800..=0xd7ff => 0xd800,
+            0xd800..=0xdfff => {
+                lo = 0xe000;
+                continue;
+            }
+            0xe000..=0xffff => 0x10000,
+            _ => 0x110000,
+        };
+        let end = if (last as u32) < limit {
+            last as u32 + 1
+        } else {
+            limit
+        };
+        let mut first_bytes = [0; 4];
+        let width = char::from_u32(lo)
+            .unwrap()
+            .encode_utf8(&mut first_bytes)
+            .len();
+        // Each continuation byte represents six bits. Consume the largest
+        // aligned block with a common prefix, one varying byte, and zero
+        // or more unrestricted 80..BF suffix bytes.
+        let mut block = 1;
+        let mut pivot = width - 1;
+        while pivot > 0 && lo % (block * 64) == 0 && lo + block * 64 <= end {
+            block *= 64;
+            pivot -= 1;
+        }
+        let prefix_end = (lo | (block * 64 - 1)) + 1;
+        let stop = if pivot != 0 && prefix_end < end {
+            prefix_end
+        } else {
+            end
+        };
+        let next = lo + (stop - lo) / block * block;
+        let mut last_bytes = [0; 4];
+        char::from_u32(next - 1)
+            .unwrap()
+            .encode_utf8(&mut last_bytes);
+
+        // Construct the suffix first. Only the first byte can collide with
+        // an existing path; private continuation rows are already complete.
+        let mut target = to;
+        let mut i = width;
+        while i > 0 {
+            i -= 1;
+            let source = if i == 0 {
+                from
+            } else {
+                *total_states += 1;
+                check_table_space(table, *total_states);
+                (*total_states - 1) as State
+            };
+            let mut b = first_bytes[i] as usize;
+            while b <= last_bytes[i] as usize {
+                let index = compute_index(source, b as u8);
+                table[index] = merge(
+                    table,
+                    table[index],
+                    target,
+                    total_states,
+                    merged,
+                    num_merged,
+                );
+                b += 1;
+            }
+            target = source;
+        }
+        lo = next;
+    }
 }
 
 // Adds every token's transitions to `table` and remembers final states in `terminal_states`.
@@ -696,78 +785,83 @@ const fn add_transitions_to_table<'a, const T: usize, const MAX: usize>(
     table: &mut [State],
     terminal_states: &mut [(State, &'a str)],
 ) -> usize {
-    macro_rules! set_transitions {
-        ($table:expr, $buf:expr, $num_states:expr, $token_states:expr, $num_transitions:expr, $merged:expr, $num_merged:expr) => {{
-            // Number of global states used before this token.
-            // Only `START_STATE` is shared since it's unique for the whole DFA.
-            let offset = ($num_states - $token_states) as isize;
-            // We write the transitions in two passes:
-            // first the ones where `state_start` is not `START_STATE`, then the ones where it is.
-            //
-            // `START_STATE` is shared by all tokens, so writing its transitions can collide
-            // with a previous token. On a collision `merge` reads the transitions of `state_end`,
-            // so they must be **already** in the table.
-            let mut pass: usize = 0;
-            while pass < 2 {
-                let mut i: usize = 0;
-                while i < $num_transitions {
-                    let (mut state_start, c, mut state_end) = $buf[i];
-                    if (state_start == START_STATE) != (pass == 1) {
-                        i += 1;
-                        continue;
-                    }
-                    if state_start != START_STATE {
-                        state_start += offset;
-                    }
-                    // Terminal states are negative: shift their absolute value.
-                    if state_end < 0 {
-                        state_end -= offset;
-                    } else {
-                        state_end += offset;
-                    }
-                    let index = compute_index(state_start, c as u8);
-                    let old_end = $table[index];
-                    $table[index] = merge(
-                        $table,
-                        old_end,
-                        state_end,
-                        &mut $num_states,
-                        &mut $merged,
-                        &mut $num_merged,
-                    );
-                    i += 1;
-                }
-                pass += 1;
-            }
-        }};
-    }
-    let mut transition_buffer: [(State, char, State); T] =
-        [(0, 0 as char, 0); T];
+    let mut transition_buffer = [(0, ('\0', '\0'), 0); T];
     let mut merged: [(State, State, State); MAX] =
         [(INVALID_STATE, INVALID_STATE, INVALID_STATE); MAX];
     let mut num_merged: usize = 0;
-    let mut total_states: usize = 0;
+    let mut total_states: usize = 1; // shared start row
     let mut i: usize = 0;
     while i < tokens.len() {
         let token = &tokens[i];
         let (num_states, num_transitions) =
             token.build_transitions(&mut transition_buffer);
-        total_states += num_states;
-        if i > 0 {
-            total_states -= 1;
-        }
+        // A token's initial repetition must return to its own row, not to the
+        // shared start (which also skips whitespace and starts other tokens).
+        let private_start = match token.groups.first() {
+            Some(group) => {
+                matches!(group.group_type, CharacterGroupType::ZeroOrMore)
+            }
+            None => true,
+        };
+        let offset = (total_states - (!private_start as usize)) as State;
+        total_states = offset as usize + num_states;
         check_table_space(table, total_states);
         let final_state = total_states - 1;
-        set_transitions!(
-            table,
-            transition_buffer,
-            total_states,
-            num_states,
-            num_transitions,
-            merged,
-            num_merged
-        );
+        let mut j = 0;
+        while j < num_transitions {
+            let (from, range, to) = transition_buffer[j];
+            let target = if to < 0 { to - offset } else { to + offset };
+            write_range(
+                table,
+                if from == START_STATE && !private_start {
+                    START_STATE
+                } else {
+                    from + offset
+                },
+                range,
+                target,
+                &mut total_states,
+                &mut merged,
+                &mut num_merged,
+            );
+            j += 1;
+        }
+        let mut byte = 0;
+        while private_start && byte < TRANSITIONS_PER_STATE {
+            let new = table[compute_index(offset, byte as u8)];
+            table[byte] = merge(
+                table,
+                table[byte],
+                new,
+                &mut total_states,
+                &mut merged,
+                &mut num_merged,
+            );
+            byte += 1;
+        }
         terminal_states[i] = (-(final_state as isize), token.label);
+        i += 1;
+    }
+    // Fill merged rows only after all original rows (including loops) are
+    // complete. A pair's operands predate it; newly discovered pairs are
+    // appended and filled in this same pass.
+    let mut i = 0;
+    while i < num_merged {
+        let (old, new, state) = merged[i];
+        let mut c = 0;
+        while c < TRANSITIONS_PER_STATE {
+            let old_end = table[compute_index(old, c as u8)];
+            let new_end = table[compute_index(new, c as u8)];
+            table[compute_index(state, c as u8)] = merge(
+                table,
+                old_end,
+                new_end,
+                &mut total_states,
+                &mut merged,
+                &mut num_merged,
+            );
+            c += 1;
+        }
         i += 1;
     }
     return total_states;
@@ -814,10 +908,6 @@ pub const fn build_table<
 
 pub struct Lexer {}
 
-// One single token can't be longer then this amount of chars.
-// TODO: make this overridable by the user.
-const TOKEN_MAX_LEN: usize = 4096;
-
 impl Lexer {
     /// Returns the tokens in input order as `(label, text)` pairs, where
     /// `label` is the [`Token`] label and `text` is the matched text
@@ -826,10 +916,10 @@ impl Lexer {
     /// # Example
     ///
     /// ```
-    /// use yarlg::{AsciiCharacterRange as range, CharacterGroupType, Token, group, table_init};
+    /// use yarlg::{CharacterRange as range, CharacterGroupType, Token, group, table_init};
     ///
-    /// const DIGIT: range = range::new().with_start('0' as u8).with_end('9' as u8).build();
-    /// const COMMA: range = range::new().with_start(',' as u8).build();
+    /// const DIGIT: range = range::new().with_start('0').with_end('9').build();
+    /// const COMMA: range = range::new().with_start(',').build();
     ///
     /// const TOKENS: &[Token] = &[
     /// Token::new("NUMBER",
@@ -850,23 +940,28 @@ impl Lexer {
         input: &str,
         table: &TransitionTable<'a, N, M>,
     ) -> Result<Vec<(&'a str, String)>, String> {
-        let mut token_buf: [char; TOKEN_MAX_LEN + 1] =
-            ['\0'; TOKEN_MAX_LEN + 1];
-        let mut token_len: usize = 0;
+        let mut token_start = 0;
+        let mut scalar_start = 0;
         let mut tokens_found: Vec<(&'a str, String)> = vec![];
         let mut state: State = START_STATE;
         // IMPORTANT: A trailing '\0' terminates the last token, so it must be a delimiter of every token.
-        for c in input.chars().chain(std::iter::once('\0')) {
-            // Input already ended on a delimiter: nothing left to terminate.
-            if c == '\0' && state == START_STATE {
+        for (offset, byte) in
+            input.bytes().chain(std::iter::once(0)).enumerate()
+        {
+            if byte == 0 && state == START_STATE {
                 break;
             }
-            state = transition(state, c as u8, &table.table);
+            // Remember the whole delimiter (or unexpected scalar), even when
+            // its final byte triggers the transition.
+            if input.is_char_boundary(offset) {
+                scalar_start = offset;
+            }
+            state = transition(state, byte, &table.table);
             match state {
                 INVALID_STATE => {
                     return Err(format!(
                         "Error: input string is not a valid string; unexpected character `{}`",
-                        c
+                        input[scalar_start..].chars().next().unwrap_or('\0')
                     ));
                 }
                 _ if state < -1 => {
@@ -883,16 +978,20 @@ impl Lexer {
                             ));
                         }
                     };
-                    tokens_found
-                        .push((label, token_buf[..token_len].iter().collect()));
+                    tokens_found.push((
+                        label,
+                        input[token_start..scalar_start].to_owned(),
+                    ));
                     state = START_STATE;
-                    token_len = 0;
+                    token_start = offset + 1;
                 }
-                START_STATE => {}
-                _ => {
-                    token_buf[token_len] = c;
-                    token_len += 1;
+                START_STATE => token_start = offset + 1,
+                _ if offset == input.len() => {
+                    return Err(
+                        "Error: expected a delimiter at end of input".into()
+                    );
                 }
+                _ => {}
             }
         }
         return Ok(tokens_found);
